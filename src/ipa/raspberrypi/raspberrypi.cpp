@@ -54,6 +54,9 @@
 #include "metadata.h"
 #include "sharpen_algorithm.h"
 #include "sharpen_status.h"
+#include "raw_histogram_status.h"
+
+#define LIBCAMERA_CINEPI
 
 namespace libcamera {
 
@@ -640,6 +643,18 @@ void IPARPi::reportMetadata(unsigned int ipaContext)
 		for (unsigned int i = 0; i < 9; i++)
 			m[i] = ccmStatus->matrix[i];
 		libcameraMetadata_.set(controls::ColourCorrectionMatrix, m);
+	}
+
+	RawHistogramStatus *histoStatus = rpiMetadata.getLocked<RawHistogramStatus>("raw_histogram.status");
+	if (histoStatus) {
+		int32_t histo[6];
+		histo[0] = histoStatus->lo[0];
+		histo[1] = histoStatus->lo[1];
+		histo[2] = histoStatus->lo[2];
+		histo[3] = histoStatus->hi[0];
+		histo[4] = histoStatus->hi[1];
+		histo[5] = histoStatus->hi[2];
+		libcameraMetadata_.set(controls::RawHistogram, histo);
 	}
 
 	const AfStatus *afStatus = rpiMetadata.getLocked<AfStatus>("af.status");
