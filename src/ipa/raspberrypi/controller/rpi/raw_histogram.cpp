@@ -32,17 +32,9 @@ char const *RawHistogram::name() const
 void RawHistogram::process(StatisticsPtr &stats, Metadata *imageMetadata)
 {
 	RawHistogramStatus status;
-	// status.lo[0] = (int32_t)stats->hist[0].r_hist[0];
-	// status.lo[1] = (int32_t)stats->hist[0].g_hist[0];
-	// status.lo[2] = (int32_t)stats->hist[0].b_hist[0];
-
-	// status.hi[0] = (int32_t)stats->hist[0].r_hist[NUM_HISTOGRAM_BINS - 1];
-	// status.hi[1] = (int32_t)stats->hist[0].g_hist[NUM_HISTOGRAM_BINS - 1];
-	// status.hi[2] = (int32_t)stats->hist[0].b_hist[NUM_HISTOGRAM_BINS - 1];
 	memcpy(status.r,stats->hist[0].r_hist,sizeof(stats->hist[0].r_hist));
 	memcpy(status.g,stats->hist[0].g_hist,sizeof(stats->hist[0].g_hist));
 	memcpy(status.b,stats->hist[0].b_hist,sizeof(stats->hist[0].b_hist));
-	
 	imageMetadata->set("raw_histogram.status", status);
 }
 
