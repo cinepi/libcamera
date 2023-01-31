@@ -645,13 +645,16 @@ void IPARPi::reportMetadata(unsigned int ipaContext)
 
 	RawHistogramStatus *histoStatus = rpiMetadata.getLocked<RawHistogramStatus>("raw_histogram.status");
 	if (histoStatus) {
-		int32_t histo[6];
-		histo[0] = histoStatus->lo[0];
-		histo[1] = histoStatus->lo[1];
-		histo[2] = histoStatus->lo[2];
-		histo[3] = histoStatus->hi[0];
-		histo[4] = histoStatus->hi[1];
-		histo[5] = histoStatus->hi[2];
+		int32_t histo[3*NUM_HISTOGRAM_BINS];
+		// histo[0] = histoStatus->lo[0];
+		// histo[1] = histoStatus->lo[1];
+		// histo[2] = histoStatus->lo[2];
+		// histo[3] = histoStatus->hi[0];
+		// histo[4] = histoStatus->hi[1];
+		// histo[5] = histoStatus->hi[2];
+		memcpy((void *)&histo[(0*NUM_HISTOGRAM_BINS)], histoStatus->r, sizeof(histoStatus->r));
+		memcpy((void *)&histo[(1*NUM_HISTOGRAM_BINS)], histoStatus->g, sizeof(histoStatus->g));
+		memcpy((void *)&histo[(2*NUM_HISTOGRAM_BINS)], histoStatus->b, sizeof(histoStatus->b));
 		libcameraMetadata_.set(controls::RawHistogram, histo);
 	}
 

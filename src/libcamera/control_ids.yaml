@@ -298,7 +298,7 @@ controls:
       description: |
         The array that holds the low and high bins of the RAW R,G,B histogram. 
 
-      size: [6]
+      size: [3,128]
 
   - ScalerCrop:
       type: Rectangle
