@@ -56,8 +56,6 @@
 #include "sharpen_status.h"
 #include "raw_histogram_status.h"
 
-#define LIBCAMERA_CINEPI
-
 namespace libcamera {
 
 using namespace std::literals::chrono_literals;

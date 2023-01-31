@@ -296,9 +296,9 @@ controls:
   - RawHistogram:
       type: int32_t
       description: |
-        The 2x3 matrix that holds the low and high bins of the RAW R,G,B histogram. 
+        The array that holds the low and high bins of the RAW R,G,B histogram. 
 
-      size: [2,3]
+      size: [6]
 
   - ScalerCrop:
       type: Rectangle

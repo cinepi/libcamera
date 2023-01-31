@@ -516,6 +516,9 @@
         },
         {
             "rpi.focus": { }
+        },
+        {
+            "rpi.raw_histogram": { }
         }
     ]
 }

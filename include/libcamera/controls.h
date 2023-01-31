@@ -20,6 +20,8 @@
 
 #include <libcamera/geometry.h>
 
+#define LIBCAMERA_CINEPI_CONTROLS
+
 namespace libcamera {
 
 class ControlValidator;
