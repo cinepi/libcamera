@@ -650,7 +650,29 @@ void IPARPi::reportMetadata(unsigned int ipaContext)
 		memcpy((void *)&histo[(0*NUM_HISTOGRAM_BINS)], histoStatus->r, sizeof(histoStatus->r));
 		memcpy((void *)&histo[(1*NUM_HISTOGRAM_BINS)], histoStatus->g, sizeof(histoStatus->g));
 		memcpy((void *)&histo[(2*NUM_HISTOGRAM_BINS)], histoStatus->b, sizeof(histoStatus->b));
+
+		int32_t histo_stats[9];
+		histo_stats[0] = 0;
+		histo_stats[1] = 0;
+		histo_stats[2] = 0; 
+
+		for(uint8_t i = 0; i < NUM_HISTOGRAM_BINS; i++){
+			histo_stats[0] += (int32_t)histoStatus->r[i];
+			histo_stats[1] += (int32_t)histoStatus->g[i];
+			histo_stats[2] += (int32_t)histoStatus->b[i];
+		}
+
+		histo_stats[3] = histoStatus->r[0];
+		histo_stats[4] = histoStatus->g[0];
+		histo_stats[5] = histoStatus->b[0];
+
+		histo_stats[6] = histoStatus->r[NUM_HISTOGRAM_BINS-1];
+		histo_stats[7] = histoStatus->g[NUM_HISTOGRAM_BINS-1];
+		histo_stats[8] = histoStatus->b[NUM_HISTOGRAM_BINS-1];
+
+
 		libcameraMetadata_.set(controls::RawHistogram, histo);
+		libcameraMetadata_.set(controls::RawHistogramExt, histo_stats);
 	}
 
 	const AfStatus *afStatus = rpiMetadata.getLocked<AfStatus>("af.status");
