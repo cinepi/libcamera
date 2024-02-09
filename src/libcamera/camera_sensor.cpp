@@ -15,6 +15,8 @@
 #include <math.h>
 #include <string.h>
 
+#include <libcamera/camera.h>
+#include <libcamera/orientation.h>
 #include <libcamera/property_ids.h>
 
 #include <libcamera/base/utils.h>
@@ -55,7 +57,8 @@ LOG_DEFINE_CATEGORY(CameraSensor)
  */
 CameraSensor::CameraSensor(const MediaEntity *entity)
 	: entity_(entity), pad_(UINT_MAX), staticProps_(nullptr),
-	  bayerFormat_(nullptr), properties_(properties::properties)
+	  bayerFormat_(nullptr), supportFlips_(false),
+	  properties_(properties::properties)
 {
 }
 
@@ -194,17 +197,19 @@ int CameraSensor::init()
 	 * \todo The control API ought to have a flag to specify if a control
 	 * is read-only which could be used below.
 	 */
-	const ControlInfo hblank = ctrls.infoMap()->at(V4L2_CID_HBLANK);
-	const int32_t hblankMin = hblank.min().get<int32_t>();
-	const int32_t hblankMax = hblank.max().get<int32_t>();
+	if (ctrls.infoMap()->find(V4L2_CID_HBLANK) != ctrls.infoMap()->end()) {
+		const ControlInfo hblank = ctrls.infoMap()->at(V4L2_CID_HBLANK);
+		const int32_t hblankMin = hblank.min().get<int32_t>();
+		const int32_t hblankMax = hblank.max().get<int32_t>();
 
-	if (hblankMin != hblankMax) {
-		ControlList ctrl(subdev_->controls());
+		if (hblankMin != hblankMax) {
+			ControlList ctrl(subdev_->controls());
 
-		ctrl.set(V4L2_CID_HBLANK, hblankMin);
-		ret = subdev_->setControls(&ctrl);
-		if (ret)
-			return ret;
+			ctrl.set(V4L2_CID_HBLANK, hblankMin);
+			ret = subdev_->setControls(&ctrl);
+			if (ret)
+				return ret;
+		}
 	}
 
 	return applyTestPatternMode(controls::draft::TestPatternModeEnum::TestPatternModeOff);
@@ -246,6 +251,21 @@ int CameraSensor::validateSensorDriver()
 			err = -EINVAL;
 		}
 	}
+
+	/*
+	 * Verify if sensor supports horizontal/vertical flips
+	 *
+	 * \todo Handle horizontal and vertical flips independently.
+	 */
+	const struct v4l2_query_ext_ctrl *hflipInfo = subdev_->controlInfo(V4L2_CID_HFLIP);
+	const struct v4l2_query_ext_ctrl *vflipInfo = subdev_->controlInfo(V4L2_CID_VFLIP);
+	if (hflipInfo && !(hflipInfo->flags & V4L2_CTRL_FLAG_READ_ONLY) &&
+	    vflipInfo && !(vflipInfo->flags & V4L2_CTRL_FLAG_READ_ONLY))
+		supportFlips_ = true;
+
+	if (!supportFlips_)
+		LOG(CameraSensor, Debug)
+			<< "Camera sensor does not support horizontal/vertical flip";
 
 	/*
 	 * Make sure the required selection targets are supported.
@@ -416,18 +436,18 @@ int CameraSensor::initProperties()
 
 	/* Retrieve and register properties from the kernel interface. */
 	const ControlInfoMap &controls = subdev_->controls();
-	int32_t propertyValue;
 
 	const auto &orientation = controls.find(V4L2_CID_CAMERA_ORIENTATION);
 	if (orientation != controls.end()) {
 		int32_t v4l2Orientation = orientation->second.def().get<int32_t>();
+		int32_t propertyValue;
 
 		switch (v4l2Orientation) {
 		default:
 			LOG(CameraSensor, Warning)
 				<< "Unsupported camera location "
 				<< v4l2Orientation << ", setting to External";
-			/* Fall-through */
+			[[fallthrough]];
 		case V4L2_CAMERA_ORIENTATION_EXTERNAL:
 			propertyValue = properties::CameraLocationExternal;
 			break;
@@ -445,8 +465,27 @@ int CameraSensor::initProperties()
 
 	const auto &rotationControl = controls.find(V4L2_CID_CAMERA_SENSOR_ROTATION);
 	if (rotationControl != controls.end()) {
-		propertyValue = rotationControl->second.def().get<int32_t>();
+		int32_t propertyValue = rotationControl->second.def().get<int32_t>();
+
+		/*
+		 * Cache the Transform associated with the camera mounting
+		 * rotation for later use in computeTransform().
+		 */
+		bool success;
+		mountingOrientation_ = orientationFromRotation(propertyValue, &success);
+		if (!success) {
+			LOG(CameraSensor, Warning)
+				<< "Invalid rotation of " << propertyValue
+				<< " degrees - ignoring";
+			mountingOrientation_ = Orientation::Rotate0;
+		}
+
 		properties_.set(properties::Rotation, propertyValue);
+	} else {
+		LOG(CameraSensor, Warning)
+			<< "Rotation control not available, default to 0 degrees";
+		properties_.set(properties::Rotation, 0);
+		mountingOrientation_ = Orientation::Rotate0;
 	}
 
 	properties_.set(properties::PixelArraySize, pixelArraySize_);
@@ -742,18 +781,141 @@ V4L2SubdeviceFormat CameraSensor::getFormat(const std::vector<unsigned int> &mbu
 /**
  * \brief Set the sensor output format
  * \param[in] format The desired sensor output format
+ * \param[in] transform The transform to be applied on the sensor.
+ * Defaults to Identity.
+ *
+ * If flips are writable they are configured according to the desired Transform.
+ * Transform::Identity always corresponds to H/V flip being disabled if the
+ * controls are writable. Flips are set before the new format is applied as
+ * they can effectively change the Bayer pattern ordering.
  *
  * The ranges of any controls associated with the sensor are also updated.
  *
  * \return 0 on success or a negative error code otherwise
  */
-int CameraSensor::setFormat(V4L2SubdeviceFormat *format)
+int CameraSensor::setFormat(V4L2SubdeviceFormat *format, Transform transform)
 {
+	/* Configure flips if the sensor supports that. */
+	if (supportFlips_) {
+		ControlList flipCtrls(subdev_->controls());
+
+		flipCtrls.set(V4L2_CID_HFLIP,
+			      static_cast<int32_t>(!!(transform & Transform::HFlip)));
+		flipCtrls.set(V4L2_CID_VFLIP,
+			      static_cast<int32_t>(!!(transform & Transform::VFlip)));
+
+		int ret = subdev_->setControls(&flipCtrls);
+		if (ret)
+			return ret;
+	}
+
+	/* Apply format on the subdev. */
 	int ret = subdev_->setFormat(pad_, format);
 	if (ret)
 		return ret;
 
 	updateControlInfo();
+	return 0;
+}
+
+/**
+ * \brief Try the sensor output format
+ * \param[in] format The desired sensor output format
+ *
+ * The ranges of any controls associated with the sensor are not updated.
+ *
+ * \todo Add support for Transform by changing the format's Bayer ordering
+ * before calling subdev_->setFormat().
+ *
+ * \return 0 on success or a negative error code otherwise
+ */
+int CameraSensor::tryFormat(V4L2SubdeviceFormat *format) const
+{
+	return subdev_->setFormat(pad_, format,
+				  V4L2Subdevice::Whence::TryFormat);
+}
+
+/**
+ * \brief Apply a sensor configuration to the camera sensor
+ * \param[in] config The sensor configuration
+ * \param[in] transform The transform to be applied on the sensor.
+ * Defaults to Identity
+ * \param[out] sensorFormat Format applied to the sensor (optional)
+ *
+ * Apply to the camera sensor the configuration \a config.
+ *
+ * \todo The configuration shall be fully populated and if any of the fields
+ * specified cannot be applied exactly, an error code is returned.
+ *
+ * \return 0 if \a config is applied correctly to the camera sensor, a negative
+ * error code otherwise
+ */
+int CameraSensor::applyConfiguration(const SensorConfiguration &config,
+				     Transform transform,
+				     V4L2SubdeviceFormat *sensorFormat)
+{
+	if (!config.isValid()) {
+		LOG(CameraSensor, Error) << "Invalid sensor configuration";
+		return -EINVAL;
+	}
+
+	std::vector<unsigned int> filteredCodes;
+	std::copy_if(mbusCodes_.begin(), mbusCodes_.end(),
+		     std::back_inserter(filteredCodes),
+		     [&config](unsigned int mbusCode) {
+			     BayerFormat bayer = BayerFormat::fromMbusCode(mbusCode);
+			     if (bayer.bitDepth == config.bitDepth)
+				     return true;
+			     return false;
+		     });
+	if (filteredCodes.empty()) {
+		LOG(CameraSensor, Error)
+			<< "Cannot find any format with bit depth "
+			<< config.bitDepth;
+		return -EINVAL;
+	}
+
+	/*
+	 * Compute the sensor's data frame size by applying the cropping
+	 * rectangle, subsampling and output crop to the sensor's pixel array
+	 * size.
+	 *
+	 * \todo The actual size computation is for now ignored and only the
+	 * output size is considered. This implies that resolutions obtained
+	 * with two different cropping/subsampling will look identical and
+	 * only the first found one will be considered.
+	 */
+	V4L2SubdeviceFormat subdevFormat = {};
+	for (unsigned int code : filteredCodes) {
+		for (const Size &size : sizes(code)) {
+			if (size.width != config.outputSize.width ||
+			    size.height != config.outputSize.height)
+				continue;
+
+			subdevFormat.mbus_code = code;
+			subdevFormat.size = size;
+			break;
+		}
+	}
+	if (!subdevFormat.mbus_code) {
+		LOG(CameraSensor, Error) << "Invalid output size in sensor configuration";
+		return -EINVAL;
+	}
+
+	int ret = setFormat(&subdevFormat, transform);
+	if (ret)
+		return ret;
+
+	/*
+	 * Return to the caller the format actually applied to the sensor.
+	 * This is relevant if transform has changed the bayer pattern order.
+	 */
+	if (sensorFormat)
+		*sensorFormat = subdevFormat;
+
+	/* \todo Handle AnalogCrop. Most sensors do not support set_selection */
+	/* \todo Handle scaling in the digital domain. */
+
 	return 0;
 }
 
@@ -901,6 +1063,9 @@ int CameraSensor::sensorInfo(IPACameraSensorInfo *info) const
 	info->bitsPerPixel = format.bitsPerPixel();
 	info->outputSize = format.size;
 
+	std::optional<int32_t> cfa = properties_.get(properties::draft::ColorFilterArrangement);
+	info->cfaPattern = cfa ? *cfa : properties::draft::RGB;
+
 	/*
 	 * Retrieve the pixel rate, line length and minimum/maximum frame
 	 * duration through V4L2 controls. Support for the V4L2_CID_PIXEL_RATE,
@@ -945,6 +1110,65 @@ void CameraSensor::updateControlInfo()
  * \return The focus lens controller. nullptr if no focus lens controller is
  * connected to the sensor
  */
+
+/**
+ * \brief Compute the Transform that gives the requested \a orientation
+ * \param[inout] orientation The desired image orientation
+ *
+ * This function computes the Transform that the pipeline handler should apply
+ * to the CameraSensor to obtain the requested \a orientation.
+ *
+ * The intended caller of this function is the validate() implementation of
+ * pipeline handlers, that pass in the application requested
+ * CameraConfiguration::orientation and obtain a Transform to apply to the
+ * camera sensor, likely at configure() time.
+ *
+ * If the requested \a orientation cannot be obtained, the \a orientation
+ * parameter is adjusted to report the current image orientation and
+ * Transform::Identity is returned.
+ *
+ * If the requested \a orientation can be obtained, the function computes a
+ * Transform and does not adjust \a orientation.
+ *
+ * Pipeline handlers are expected to verify if \a orientation has been
+ * adjusted by this function and set the CameraConfiguration::status to
+ * Adjusted accordingly.
+ *
+ * \return A Transform instance that applied to the CameraSensor produces images
+ * with \a orientation
+ */
+Transform CameraSensor::computeTransform(Orientation *orientation) const
+{
+	/*
+	 * If we cannot do any flips we cannot change the native camera mounting
+	 * orientation.
+	 */
+	if (!supportFlips_) {
+		*orientation = mountingOrientation_;
+		return Transform::Identity;
+	}
+
+	/*
+	 * Now compute the required transform to obtain 'orientation' starting
+	 * from the mounting rotation.
+	 *
+	 * As a note:
+	 * 	orientation / mountingOrientation_ = transform
+	 * 	mountingOrientation_ * transform = orientation
+	 */
+	Transform transform = *orientation / mountingOrientation_;
+
+	/*
+	 * If transform contains any Transpose we cannot do it, so adjust
+	 * 'orientation' to report the image native orientation and return Identity.
+	 */
+	if (!!(transform & Transform::Transpose)) {
+		*orientation = mountingOrientation_;
+		return Transform::Identity;
+	}
+
+	return transform;
+}
 
 std::string CameraSensor::logPrefix() const
 {

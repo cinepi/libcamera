@@ -13,6 +13,7 @@
 #include <list>
 #include <map>
 #include <string.h>
+#include <string_view>
 #include <sys/ioctl.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
@@ -315,6 +316,7 @@ int DeviceEnumeratorUdev::addV4L2Device(dev_t devnum)
 	 * enumerator.
 	 */
 	deps->deps_.erase(devnum);
+	devMap_.erase(it);
 
 	if (deps->deps_.empty()) {
 		LOG(DeviceEnumerator, Debug)
@@ -330,18 +332,18 @@ int DeviceEnumeratorUdev::addV4L2Device(dev_t devnum)
 void DeviceEnumeratorUdev::udevNotify()
 {
 	struct udev_device *dev = udev_monitor_receive_device(monitor_);
-	std::string action(udev_device_get_action(dev));
-	std::string deviceNode(udev_device_get_devnode(dev));
+	std::string_view action(udev_device_get_action(dev));
+	std::string_view deviceNode(udev_device_get_devnode(dev));
 
 	LOG(DeviceEnumerator, Debug)
-		<< action << " device " << udev_device_get_devnode(dev);
+		<< action << " device " << deviceNode;
 
 	if (action == "add") {
 		addUdevDevice(dev);
 	} else if (action == "remove") {
 		const char *subsystem = udev_device_get_subsystem(dev);
 		if (subsystem && !strcmp(subsystem, "media"))
-			removeDevice(deviceNode);
+			removeDevice(std::string(deviceNode));
 	}
 
 	udev_device_unref(dev);

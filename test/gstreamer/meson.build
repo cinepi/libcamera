@@ -7,8 +7,9 @@ endif
 gstreamer_tests = [
     {'name': 'single_stream_test', 'sources': ['gstreamer_single_stream_test.cpp']},
     {'name': 'multi_stream_test', 'sources': ['gstreamer_multi_stream_test.cpp']},
+    {'name': 'device_provider_test', 'sources': ['gstreamer_device_provider_test.cpp']},
 ]
-gstreamer_dep = dependency('gstreamer-1.0', required: true)
+gstreamer_dep = dependency('gstreamer-1.0', required : true)
 
 foreach test : gstreamer_tests
     exe = executable(test['name'], test['sources'], 'gstreamer_test.cpp',

@@ -127,14 +127,19 @@ void RkISP1Path::populateFormats()
 }
 
 StreamConfiguration
-RkISP1Path::generateConfiguration(const CameraSensor *sensor, StreamRole role)
+RkISP1Path::generateConfiguration(const CameraSensor *sensor, const Size &size,
+				  StreamRole role)
 {
 	const std::vector<unsigned int> &mbusCodes = sensor->mbusCodes();
 	const Size &resolution = sensor->resolution();
 
+	/* Min and max resolutions to populate the available stream formats. */
 	Size maxResolution = maxResolution_.boundedToAspectRatio(resolution)
 					   .boundedTo(resolution);
 	Size minResolution = minResolution_.expandedToAspectRatio(resolution);
+
+	/* The desired stream size, bound to the max resolution. */
+	Size streamSize = size.boundedTo(maxResolution);
 
 	/* Create the list of supported stream formats. */
 	std::map<PixelFormat, std::vector<SizeRange>> streamFormats;
@@ -144,18 +149,34 @@ RkISP1Path::generateConfiguration(const CameraSensor *sensor, StreamRole role)
 	for (const auto &format : streamFormats_) {
 		const PixelFormatInfo &info = PixelFormatInfo::info(format);
 
+		/* Populate stream formats for non-RAW configurations. */
 		if (info.colourEncoding != PixelFormatInfo::ColourEncodingRAW) {
+			if (role == StreamRole::Raw)
+				continue;
+
 			streamFormats[format] = { { minResolution, maxResolution } };
 			continue;
 		}
 
-		/* Skip raw formats not supported by the sensor. */
+		/* Skip RAW formats for non-raw roles. */
+		if (role != StreamRole::Raw)
+			continue;
+
+		/* Populate stream formats for RAW configurations. */
 		uint32_t mbusCode = formatToMediaBus.at(format);
 		if (std::find(mbusCodes.begin(), mbusCodes.end(), mbusCode) ==
 		    mbusCodes.end())
+			/* Skip formats not supported by sensor. */
 			continue;
 
-		streamFormats[format] = { { resolution, resolution } };
+		/* Add all the RAW sizes the sensor can produce for this code. */
+		for (const auto &rawSize : sensor->sizes(mbusCode)) {
+			if (rawSize.width > maxResolution_.width ||
+			    rawSize.height > maxResolution_.height)
+				continue;
+
+			streamFormats[format].push_back({ rawSize, rawSize });
+		}
 
 		/*
 		 * Store the raw format with the highest bits per pixel for
@@ -189,7 +210,7 @@ RkISP1Path::generateConfiguration(const CameraSensor *sensor, StreamRole role)
 	StreamFormats formats(streamFormats);
 	StreamConfiguration cfg(formats);
 	cfg.pixelFormat = format;
-	cfg.size = maxResolution;
+	cfg.size = streamSize;
 	cfg.bufferCount = RKISP1_BUFFER_COUNT;
 
 	return cfg;
@@ -314,7 +335,18 @@ int RkISP1Path::configure(const StreamConfiguration &config,
 	if (ret < 0)
 		return ret;
 
-	Rectangle rect(0, 0, ispFormat.size);
+	/*
+	 * Crop on the resizer input to maintain FOV before downscaling.
+	 *
+	 * \todo The alignment to a multiple of 2 pixels is required but may
+	 * change the aspect ratio very slightly. A more advanced algorithm to
+	 * compute the resizer input crop rectangle is needed, and it should
+	 * also take into account the need to crop away the edge pixels affected
+	 * by the ISP processing blocks.
+	 */
+	Size ispCrop = inputFormat.size.boundedToAspectRatio(config.size)
+				       .alignedUpTo(2, 2);
+	Rectangle rect = ispCrop.centeredTo(Rectangle(inputFormat.size).center());
 	ret = resizer_->setSelection(0, V4L2_SEL_TGT_CROP, &rect);
 	if (ret < 0)
 		return ret;

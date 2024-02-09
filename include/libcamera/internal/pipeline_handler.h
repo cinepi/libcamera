@@ -49,7 +49,7 @@ public:
 	void release(Camera *camera);
 
 	virtual std::unique_ptr<CameraConfiguration> generateConfiguration(Camera *camera,
-		const StreamRoles &roles) = 0;
+									   Span<const StreamRole> roles) = 0;
 	virtual int configure(Camera *camera, CameraConfiguration *config) = 0;
 
 	virtual int exportFrameBuffers(Camera *camera, Stream *stream,
@@ -64,6 +64,9 @@ public:
 
 	bool completeBuffer(Request *request, FrameBuffer *buffer);
 	void completeRequest(Request *request);
+
+	std::string configurationFile(const std::string &subdir,
+				      const std::string &name) const;
 
 	const char *name() const { return name_; }
 

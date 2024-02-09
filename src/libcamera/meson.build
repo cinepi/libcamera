@@ -13,6 +13,7 @@ libcamera_sources = files([
     'controls.cpp',
     'control_serializer.cpp',
     'control_validator.cpp',
+    'converter.cpp',
     'delayed_controls.cpp',
     'device_enumerator.cpp',
     'device_enumerator_sysfs.cpp',
@@ -33,6 +34,7 @@ libcamera_sources = files([
     'mapped_framebuffer.cpp',
     'media_device.cpp',
     'media_object.cpp',
+    'orientation.cpp',
     'pipeline_handler.cpp',
     'pixel_format.cpp',
     'process.cpp',
@@ -57,21 +59,25 @@ includes = [
     libcamera_includes,
 ]
 
+libcamera_deps = []
+
 libatomic = cc.find_library('atomic', required : false)
 libthreads = dependency('threads')
 
 subdir('base')
+subdir('converter')
 subdir('ipa')
 subdir('pipeline')
 subdir('proxy')
 
 null_dep = dependency('', required : false)
 
+# TODO: Use dependency('dl') when updating to meson 0.62.0 or newer.
 libdl = null_dep
 if not cc.has_function('dlopen')
     libdl = cc.find_library('dl')
 endif
-libudev = dependency('libudev', required : false)
+libudev = dependency('libudev', required : get_option('udev'))
 libyaml = dependency('yaml-0.1', required : false)
 
 # Use one of gnutls or libcrypto (provided by OpenSSL), trying gnutls first.
@@ -87,6 +93,10 @@ endif
 
 if not libcrypto.found()
     warning('Neither gnutls nor libcrypto found, all IPA modules will be isolated')
+    summary({'IPA modules signed with': 'None (modules will run isolated)'},
+            section : 'Configuration')
+else
+    summary({'IPA modules signed with' : libcrypto.name()}, section : 'Configuration')
 endif
 
 if liblttng.found()
@@ -117,12 +127,27 @@ endif
 
 control_sources = []
 
-foreach source : control_source_files
-    input_files = files(source +'.yaml', source + '.cpp.in')
-    control_sources += custom_target(source + '_cpp',
+controls_mode_files = {
+    'controls' : controls_files,
+    'properties' : properties_files,
+}
+
+foreach mode, input_files : controls_mode_files
+    input_files = files(input_files)
+
+    if mode == 'controls'
+        template_file = files('control_ids.cpp.in')
+    else
+        template_file = files('property_ids.cpp.in')
+    endif
+
+    ranges_file = files('control_ranges.yaml')
+    control_sources += custom_target(mode + '_cpp',
                                      input : input_files,
-                                     output : source + '.cpp',
-                                     command : [gen_controls, '-o', '@OUTPUT@', '@INPUT@'])
+                                     output : mode + '_ids.cpp',
+                                     command : [gen_controls, '-o', '@OUTPUT@',
+                                                '--mode', mode, '-t', template_file,
+                                                '-r', ranges_file, '@INPUT@'])
 endforeach
 
 libcamera_sources += control_sources
@@ -147,7 +172,7 @@ if ipa_sign_module
     libcamera_sources += ipa_pub_key_cpp
 endif
 
-libcamera_deps = [
+libcamera_deps += [
     libatomic,
     libcamera_base,
     libcamera_base_private,

@@ -311,7 +311,8 @@ StreamConfiguration::StreamConfiguration(const StreamFormats &formats)
  * The stride value reports the number of bytes between the beginning of
  * successive lines in an image buffer for this stream. The value is
  * valid after successfully validating the configuration with a call to
- * CameraConfiguration::validate().
+ * CameraConfiguration::validate(). For compressed formats (such as MJPEG),
+ * this value will be zero.
  */
 
 /**
@@ -435,11 +436,6 @@ std::ostream &operator<<(std::ostream &out, StreamRole role)
 	out << names[static_cast<std::underlying_type_t<StreamRole>>(role)];
 	return out;
 }
-
-/**
- * \typedef StreamRoles
- * \brief A vector of StreamRole
- */
 
 /**
  * \class Stream

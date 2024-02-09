@@ -12,7 +12,11 @@
 #include "../camera_device.h"
 #include "../camera_metadata.h"
 #include "../camera_request.h"
+#if defined(OS_CHROMEOS)
+#include "encoder_jea.h"
+#else /* !defined(OS_CHROMEOS) */
 #include "encoder_libjpeg.h"
+#endif
 #include "exif.h"
 
 #include <libcamera/base/log.h>
@@ -46,7 +50,11 @@ int PostProcessorJpeg::configure(const StreamConfiguration &inCfg,
 
 	thumbnailer_.configure(inCfg.size, inCfg.pixelFormat);
 
+#if defined(OS_CHROMEOS)
+	encoder_ = std::make_unique<EncoderJea>();
+#else /* !defined(OS_CHROMEOS) */
 	encoder_ = std::make_unique<EncoderLibJpeg>();
+#endif
 
 	return encoder_->configure(inCfg);
 }
@@ -194,8 +202,7 @@ void PostProcessorJpeg::process(Camera3RequestDescriptor::StreamBuffer *streamBu
 	const uint8_t quality = ret ? *entry.data.u8 : 95;
 	resultMetadata->addEntry(ANDROID_JPEG_QUALITY, quality);
 
-	int jpeg_size = encoder_->encode(source, destination->plane(0),
-					 exif.data(), quality);
+	int jpeg_size = encoder_->encode(streamBuffer, exif.data(), quality);
 	if (jpeg_size < 0) {
 		LOG(JPEG, Error) << "Failed to encode stream image";
 		processComplete.emit(streamBuffer, PostProcessor::Status::Error);

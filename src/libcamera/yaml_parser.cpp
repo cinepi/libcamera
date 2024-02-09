@@ -283,7 +283,7 @@ std::optional<double> YamlObject::get() const
 	char *end;
 
 	errno = 0;
-	double value = std::strtod(value_.c_str(), &end);
+	double value = utils::strtod(value_.c_str(), &end);
 
 	if ('\0' != *end || errno == ERANGE)
 		return std::nullopt;
@@ -676,7 +676,7 @@ int YamlParserContext::parseDictionaryOrList(YamlObject::Type type,
 	 * Add a safety counter to make sure we don't loop indefinitely in case
 	 * the YAML file is malformed.
 	 */
-	for (unsigned int sentinel = 1000; sentinel; sentinel--) {
+	for (unsigned int sentinel = 2000; sentinel; sentinel--) {
 		auto evt = nextEvent();
 		if (!evt)
 			return -EINVAL;

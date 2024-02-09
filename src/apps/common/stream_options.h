@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <libcamera/camera.h>
 
 #include "options.h"
@@ -18,11 +20,10 @@ public:
 
 	KeyValueParser::Options parse(const char *arguments) override;
 
-	static libcamera::StreamRoles roles(const OptionValue &values);
+	static std::vector<libcamera::StreamRole> roles(const OptionValue &values);
 	static int updateConfiguration(libcamera::CameraConfiguration *config,
 				       const OptionValue &values);
 
 private:
-	static bool parseRole(libcamera::StreamRole *role,
-			      const KeyValueParser::Options &options);
+	static std::optional<libcamera::StreamRole> parseRole(const KeyValueParser::Options &options);
 };

@@ -7,6 +7,8 @@
 
 #include <libcamera/transform.h>
 
+#include <libcamera/orientation.h>
+
 /**
  * \file transform.h
  * \brief Enum to represent and manipulate 2D plane transforms
@@ -187,24 +189,24 @@ Input image   | |   goes to output image   | |
  */
 
 /**
- * \brief Compose two transforms together
- * \param[in] t1 The second transform
- * \param[in] t0 The first transform
+ * \brief Compose two transforms by applying \a t0 first then \a t1
+ * \param[in] t0 The first transform to apply
+ * \param[in] t1 The second transform to apply
  *
- * Composing transforms follows the usual mathematical convention for
- * composing functions. That is, when performing `t1 * t0`, \a t0 is applied
- * first, and then \a t1.
- * For example, `Transpose * HFlip` performs `HFlip` first and then the
- * `Transpose` yielding `Rot270`, as shown below.
+ * Compose two transforms into a transform that is equivalent to first applying
+ * \a t0 and then applying \a t1. For example, `HFlip * Transpose` performs
+ * `HFlip` first and then the `Transpose` yielding `Rot270`, as shown below.
 ~~~
              A-B                 B-A                     B-D
 Input image  | |   -> HFLip ->   | |   -> Transpose ->   | |   = Rot270
              C-D                 D-C                     A-C
 ~~~
- * Note that composition is generally non-commutative for Transforms,
- * and not the same as XOR-ing the underlying bit representations.
+ * Note that composition is generally non-commutative for Transforms, and not
+ * the same as XOR-ing the underlying bit representations.
+ *
+ * \return A Transform equivalent to applying \a t0 and then \a t1
  */
-Transform operator*(Transform t1, Transform t0)
+Transform operator*(Transform t0, Transform t1)
 {
 	/*
 	 * Reorder the operations so that we imagine doing t0's transpose
@@ -297,6 +299,91 @@ Transform transformFromRotation(int angle, bool *success)
 		*success = false;
 
 	return Transform::Identity;
+}
+
+namespace {
+
+/**
+ * \brief Return the transform representing \a orientation
+ * \param[in] orientation The orientation to convert
+ * \return The transform corresponding to \a orientation
+ */
+Transform transformFromOrientation(const Orientation &orientation)
+{
+	switch (orientation) {
+	case Orientation::Rotate0:
+		return Transform::Identity;
+	case Orientation::Rotate0Mirror:
+		return Transform::HFlip;
+	case Orientation::Rotate180:
+		return Transform::Rot180;
+	case Orientation::Rotate180Mirror:
+		return Transform::VFlip;
+	case Orientation::Rotate90Mirror:
+		return Transform::Transpose;
+	case Orientation::Rotate90:
+		return Transform::Rot90;
+	case Orientation::Rotate270Mirror:
+		return Transform::Rot180Transpose;
+	case Orientation::Rotate270:
+		return Transform::Rot270;
+	}
+
+	return Transform::Identity;
+}
+
+} /* namespace */
+
+/**
+ * \brief Return the Transform that applied to \a o2 gives \a o1
+ * \param o1 The Orientation to obtain
+ * \param o2 The base Orientation
+ *
+ * This operation can be used to easily compute the Transform to apply to a
+ * base orientation \a o2 to get the desired orientation \a o1.
+ *
+ * \return A Transform that applied to \a o2 gives \a o1
+ */
+Transform operator/(const Orientation &o1, const Orientation &o2)
+{
+	Transform t1 = transformFromOrientation(o1);
+	Transform t2 = transformFromOrientation(o2);
+
+	return -t2 * t1;
+}
+
+/**
+ * \brief Apply the Transform \a t on the orientation \a o
+ * \param o The orientation
+ * \param t The transform to apply on \a o
+ * \return The Orientation resulting from applying \a t on \a o
+ */
+Orientation operator*(const Orientation &o, const Transform &t)
+{
+	/*
+	 * Apply a Transform corresponding to the orientation first and
+	 * then apply \a t to it.
+	 */
+	switch (transformFromOrientation(o) * t) {
+	case Transform::Identity:
+		return Orientation::Rotate0;
+	case Transform::HFlip:
+		return Orientation::Rotate0Mirror;
+	case Transform::VFlip:
+		return Orientation::Rotate180Mirror;
+	case Transform::Rot180:
+		return Orientation::Rotate180;
+	case Transform::Transpose:
+		return Orientation::Rotate90Mirror;
+	case Transform::Rot270:
+		return Orientation::Rotate270;
+	case Transform::Rot90:
+		return Orientation::Rotate90;
+	case Transform::Rot180Transpose:
+		return Orientation::Rotate270Mirror;
+	}
+
+	return Orientation::Rotate0;
 }
 
 /**

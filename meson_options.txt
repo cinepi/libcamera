@@ -27,7 +27,7 @@ option('gstreamer',
 
 option('ipas',
         type : 'array',
-        choices : ['ipu3', 'raspberrypi', 'rkisp1', 'vimc'],
+        choices : ['ipu3', 'rkisp1', 'rpi/pisp', 'rpi/vc4', 'vimc'],
         description : 'Select which IPA modules to build')
 
 option('lc-compliance',
@@ -37,8 +37,20 @@ option('lc-compliance',
 
 option('pipelines',
         type : 'array',
-        choices : ['imx8-isi', 'ipu3', 'raspberrypi', 'rkisp1', 'simple', 'uvcvideo', 'vimc'],
-        description : 'Select which pipeline handlers to include')
+        value : ['auto'],
+        choices : [
+            'all',
+            'auto',
+            'imx8-isi',
+            'ipu3',
+            'rkisp1',
+            'rpi/pisp',
+            'rpi/vc4',
+            'simple',
+            'uvcvideo',
+            'vimc'
+        ],
+        description : 'Select which pipeline handlers to build. If this is set to "auto", all the pipelines applicable to the target architecture will be built. If this is set to "all", all the pipelines will be built. If both are selected then "all" will take precedence.')
 
 option('qcam',
         type : 'feature',
@@ -48,12 +60,17 @@ option('qcam',
 option('test',
         type : 'boolean',
         value : false,
-        description: 'Compile and include the tests')
+        description : 'Compile and include the tests')
 
 option('tracing',
         type : 'feature',
         value : 'auto',
-        description: 'Enable tracing (based on lttng)')
+        description : 'Enable tracing (based on lttng)')
+
+option('udev',
+       type : 'feature',
+       value : 'auto',
+       description : 'Enable udev support for hotplug')
 
 option('v4l2',
         type : 'boolean',

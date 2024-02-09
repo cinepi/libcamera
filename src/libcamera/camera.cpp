@@ -97,6 +97,16 @@
  * implemented in the above order at the hardware level. The libcamera pipeline
  * handlers translate the pipeline model to the real hardware configuration.
  *
+ * \subsection camera-sensor-model Camera Sensor Model
+ *
+ * By default, libcamera configures the camera sensor automatically based on the
+ * configuration of the streams. Applications may instead specify a manual
+ * configuration for the camera sensor. This allows precise control of the frame
+ * geometry and frame rate delivered by the sensor.
+ *
+ * More details about the camera sensor model implemented by libcamera are
+ * available in the libcamera camera-sensor-model documentation page.
+ *
  * \subsection digital-zoom Digital Zoom
  *
  * Digital zoom is implemented as a combination of the cropping and scaling
@@ -110,6 +120,127 @@
 namespace libcamera {
 
 LOG_DECLARE_CATEGORY(Camera)
+
+/**
+ * \class SensorConfiguration
+ * \brief Camera sensor configuration
+ *
+ * The SensorConfiguration class collects parameters to control the operations
+ * of the camera sensor, according to the abstract camera sensor model
+ * implemented by libcamera.
+ *
+ * \todo Applications shall fully populate all fields of the
+ * CameraConfiguration::sensorConfig class members before validating the
+ * CameraConfiguration. If the SensorConfiguration is not fully populated, or if
+ * any of its parameters cannot be applied to the sensor in use, the
+ * CameraConfiguration validation process will fail and return
+ * CameraConfiguration::Status::Invalid.
+ *
+ * Applications that populate the SensorConfiguration class members are
+ * expected to be highly-specialized applications that know what sensor
+ * they are operating with and what parameters are valid for the sensor in use.
+ *
+ * A detailed description of the abstract camera sensor model implemented by
+ * libcamera and the description of its configuration parameters is available
+ * in the libcamera documentation camera-sensor-model file.
+ */
+
+/**
+ * \var SensorConfiguration::bitDepth
+ * \brief The sensor image format bit depth
+ *
+ * The number of bits (resolution) used to represent a pixel sample.
+ */
+
+/**
+ * \var SensorConfiguration::analogCrop
+ * \brief The analog crop rectangle
+ *
+ * The selected portion of the active pixel array used to produce the image
+ * frame.
+ */
+
+/**
+ * \var SensorConfiguration::binning
+ * \brief Sensor binning configuration
+ *
+ * Refer to the camera-sensor-model documentation for an accurate description
+ * of the binning operations. Disabled by default.
+ */
+
+/**
+ * \var SensorConfiguration::binX
+ * \brief Horizontal binning factor
+ *
+ * The horizontal binning factor. Default to 1.
+ */
+
+/**
+ * \var SensorConfiguration::binY
+ * \brief Vertical binning factor
+ *
+ * The vertical binning factor. Default to 1.
+ */
+
+/**
+ * \var SensorConfiguration::skipping
+ * \brief The sensor skipping configuration
+ *
+ * Refer to the camera-sensor-model documentation for an accurate description
+ * of the skipping operations.
+ *
+ * If no skipping is performed, all the structure fields should be
+ * set to 1. Disabled by default.
+ */
+
+/**
+ * \var SensorConfiguration::xOddInc
+ * \brief Horizontal increment for odd rows. Default to 1.
+ */
+
+/**
+ * \var SensorConfiguration::xEvenInc
+ * \brief Horizontal increment for even rows. Default to 1.
+ */
+
+/**
+ * \var SensorConfiguration::yOddInc
+ * \brief Vertical increment for odd columns. Default to 1.
+ */
+
+/**
+ * \var SensorConfiguration::yEvenInc
+ * \brief Vertical increment for even columns. Default to 1.
+ */
+
+/**
+ * \var SensorConfiguration::outputSize
+ * \brief The frame output (visible) size
+ *
+ * The size of the data frame as received by the host processor.
+ */
+
+/**
+ * \brief Check if the sensor configuration is valid
+ *
+ * A sensor configuration is valid if it's fully populated.
+ *
+ * \todo For now allow applications to populate the bitDepth and the outputSize
+ * only as skipping and binnings factors are initialized to 1 and the analog
+ * crop is ignored.
+ *
+ * \return True if the sensor configuration is valid, false otherwise
+ */
+bool SensorConfiguration::isValid() const
+{
+	if (bitDepth && binning.binX && binning.binY &&
+	    skipping.xOddInc && skipping.yOddInc &&
+	    skipping.xEvenInc && skipping.yEvenInc &&
+	    !outputSize.isNull())
+		return true;
+
+	return false;
+}
 
 /**
  * \class CameraConfiguration
@@ -160,7 +291,7 @@ LOG_DECLARE_CATEGORY(Camera)
  * \brief Create an empty camera configuration
  */
 CameraConfiguration::CameraConfiguration()
-	: transform(Transform::Identity), config_({})
+	: orientation(Orientation::Rotate0), config_({})
 {
 }
 
@@ -361,6 +492,7 @@ CameraConfiguration::Status CameraConfiguration::validateColorSpaces(ColorSpaceF
 	 * largest non-raw stream with a defined color space (if there is one).
 	 */
 	std::optional<ColorSpace> colorSpace;
+	Size size;
 
 	for (auto [i, cfg] : utils::enumerate(config_)) {
 		if (!cfg.colorSpace)
@@ -369,9 +501,10 @@ CameraConfiguration::Status CameraConfiguration::validateColorSpaces(ColorSpaceF
 		if (cfg.colorSpace->adjust(cfg.pixelFormat))
 			status = Adjusted;
 
-		if (cfg.colorSpace != ColorSpace::Raw &&
-		    (!colorSpace || cfg.size > config_[i].size))
+		if (cfg.colorSpace != ColorSpace::Raw && cfg.size > size) {
 			colorSpace = cfg.colorSpace;
+			size = cfg.size;
+		}
 	}
 
 	if (!colorSpace || !(flags & ColorSpaceFlag::StreamsShareColorSpace))
@@ -390,17 +523,35 @@ CameraConfiguration::Status CameraConfiguration::validateColorSpaces(ColorSpaceF
 }
 
 /**
- * \var CameraConfiguration::transform
- * \brief User-specified transform to be applied to the image
+ * \var CameraConfiguration::sensorConfig
+ * \brief The camera sensor configuration
  *
- * The transform is a user-specified 2D plane transform that will be applied
- * to the camera images by the processing pipeline before being handed to
- * the application. This is subsequent to any transform that is already
- * required to fix up any platform-defined rotation.
+ * The sensorConfig member allows manual control of the configuration of the
+ * camera sensor. By default, if sensorConfig is not set, the camera will
+ * configure the sensor automatically based on the configuration of the streams.
+ * Applications can override this by manually specifying the full sensor
+ * configuration.
  *
- * The usual 2D plane transforms are allowed here (horizontal/vertical
- * flips, multiple of 90-degree rotations etc.), but the validate() function
- * may adjust this field at its discretion if the selection is not supported.
+ * Refer to the camera-sensor-model documentation and to the SensorConfiguration
+ * class documentation for details about the sensor configuration process.
+ *
+ * The camera sensor configuration applies to all streams produced by a camera
+ * from the same image source.
+ */
+
+/**
+ * \var CameraConfiguration::orientation
+ * \brief The desired orientation of the images produced by the camera
+ *
+ * The orientation field is a user-specified 2D plane transformation that
+ * specifies how the application wants the camera images to be rotated in
+ * the memory buffers.
+ *
+ * If the orientation requested by the application cannot be obtained, the
+ * camera will not rotate or flip the images, and the validate() function will
+ * Adjust this value to the native image orientation produced by the camera.
+ *
+ * By default the orientation field is set to Orientation::Rotate0.
  */
 
 /**
@@ -936,7 +1087,7 @@ const std::set<Stream *> &Camera::streams() const
  * \return A CameraConfiguration if the requested roles can be satisfied, or a
  * null pointer otherwise.
  */
-std::unique_ptr<CameraConfiguration> Camera::generateConfiguration(const StreamRoles &roles)
+std::unique_ptr<CameraConfiguration> Camera::generateConfiguration(Span<const StreamRole> roles)
 {
 	Private *const d = _d();
 
@@ -968,6 +1119,12 @@ std::unique_ptr<CameraConfiguration> Camera::generateConfiguration(const StreamR
 
 	return config;
 }
+
+/**
+ * \fn std::unique_ptr<CameraConfiguration> \
+ *     Camera::generateConfiguration(std::initializer_list<StreamRole> roles)
+ * \overload
+ */
 
 /**
  * \brief Configure the camera prior to capture
@@ -1122,6 +1279,11 @@ int Camera::queueRequest(Request *request)
 	if (request->_d()->camera() != this) {
 		LOG(Camera, Error) << "Request was not created by this camera";
 		return -EXDEV;
+	}
+
+	if (request->status() != Request::RequestPending) {
+		LOG(Camera, Error) << request->toString() << " is not valid";
+		return -EINVAL;
 	}
 
 	/*

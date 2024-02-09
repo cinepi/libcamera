@@ -14,6 +14,14 @@ if doxygen.found() and dot.found()
     cdata.set('VERSION', 'v@0@'.format(libcamera_git_version))
     cdata.set('TOP_SRCDIR', meson.project_source_root())
     cdata.set('TOP_BUILDDIR', meson.project_build_root())
+    cdata.set('OUTPUT_DIR', meson.current_build_dir())
+
+    doxygen_predefined = []
+    foreach key : config_h.keys()
+        doxygen_predefined += '@0@=@1@'.format(key, config_h.get(key))
+    endforeach
+
+    cdata.set('PREDEFINED', ' \\\n\t\t\t '.join(doxygen_predefined))
 
     doxyfile = configure_file(input : 'Doxyfile.in',
                               output : 'Doxyfile',
@@ -55,6 +63,8 @@ endif
 
 if sphinx.found()
     docs_sources = [
+        'camera-sensor-model.rst',
+        'code-of-conduct.rst',
         'coding-style.rst',
         'conf.py',
         'contributing.rst',
@@ -84,8 +94,8 @@ if sphinx.found()
                   install_dir : doc_install_dir)
 
     custom_target('documentation-linkcheck',
-                  command: [sphinx, '-W', '-b', 'linkcheck', meson.current_source_dir(), '@OUTPUT@'],
-                  build_always_stale: true,
-                  input: docs_sources,
-                  output: 'linkcheck')
+                  command : [sphinx, '-W', '-b', 'linkcheck', meson.current_source_dir(), '@OUTPUT@'],
+                  build_always_stale : true,
+                  input : docs_sources,
+                  output : 'linkcheck')
 endif

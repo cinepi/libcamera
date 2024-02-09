@@ -37,6 +37,11 @@ LIBCAMERA_IPA_MODULE_PATH
 
    Example value: ``${HOME}/.libcamera/lib:/opt/libcamera/vendor/lib``
 
+LIBCAMERA_RPI_CONFIG_FILE
+   Define a custom configuration file to use in the Raspberry Pi pipeline handler.
+
+   Example value: ``/usr/local/share/libcamera/pipeline/rpi/vc4/minimal_mem.yaml``
+
 Further details
 ---------------
 
@@ -138,7 +143,7 @@ contain tuning parameters for the algorithms, in JSON format.
 The ``LIBCAMERA_IPA_CONFIG_PATH`` variable can be used to specify custom
 storage locations to search for those configuration files.
 
-`Examples <https://git.libcamera.org/libcamera/libcamera.git/tree/src/ipa/raspberrypi/data>`__
+`Examples <https://git.libcamera.org/libcamera/libcamera.git/tree/src/ipa/rpi/vc4/data>`__
 
 IPA module
 ~~~~~~~~~~

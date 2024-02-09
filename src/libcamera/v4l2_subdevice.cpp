@@ -88,6 +88,7 @@ const std::map<uint32_t, V4L2SubdeviceFormatInfo> formatInfoMap = {
 	{ MEDIA_BUS_FMT_YUYV10_2X10, { 20, "YUYV10_2X10", PixelFormatInfo::ColourEncodingYUV } },
 	{ MEDIA_BUS_FMT_YVYU10_2X10, { 20, "YVYU10_2X10", PixelFormatInfo::ColourEncodingYUV } },
 	{ MEDIA_BUS_FMT_Y12_1X12, { 12, "Y12_1X12", PixelFormatInfo::ColourEncodingYUV } },
+	{ MEDIA_BUS_FMT_Y16_1X16, { 16, "Y16_1X16", PixelFormatInfo::ColourEncodingYUV } },
 	{ MEDIA_BUS_FMT_UYVY8_1X16, { 16, "UYVY8_1X16", PixelFormatInfo::ColourEncodingYUV } },
 	{ MEDIA_BUS_FMT_VYUY8_1X16, { 16, "VYUY8_1X16", PixelFormatInfo::ColourEncodingYUV } },
 	{ MEDIA_BUS_FMT_YUYV8_1X16, { 16, "YUYV8_1X16", PixelFormatInfo::ColourEncodingYUV } },
@@ -132,6 +133,10 @@ const std::map<uint32_t, V4L2SubdeviceFormatInfo> formatInfoMap = {
 	{ MEDIA_BUS_FMT_SGBRG12_1X12, { 12, "SGBRG12_1X12", PixelFormatInfo::ColourEncodingRAW } },
 	{ MEDIA_BUS_FMT_SGRBG12_1X12, { 12, "SGRBG12_1X12", PixelFormatInfo::ColourEncodingRAW } },
 	{ MEDIA_BUS_FMT_SRGGB12_1X12, { 12, "SRGGB12_1X12", PixelFormatInfo::ColourEncodingRAW } },
+	{ MEDIA_BUS_FMT_SBGGR16_1X16, { 16, "SBGGR16_1x16", PixelFormatInfo::ColourEncodingRAW } },
+	{ MEDIA_BUS_FMT_SGBRG16_1X16, { 16, "SGBRG16_1x16", PixelFormatInfo::ColourEncodingRAW } },
+	{ MEDIA_BUS_FMT_SGRBG16_1X16, { 16, "SGRBG16_1x16", PixelFormatInfo::ColourEncodingRAW } },
+	{ MEDIA_BUS_FMT_SRGGB16_1X16, { 16, "SRGGB16_1x16", PixelFormatInfo::ColourEncodingRAW } },
 	/* \todo Clarify colour encoding for HSV formats */
 	{ MEDIA_BUS_FMT_AHSV8888_1X32, { 32, "AHSV8888_1X32", PixelFormatInfo::ColourEncodingRGB } },
 	{ MEDIA_BUS_FMT_JPEG_1X8, { 8, "JPEG_1X8", PixelFormatInfo::ColourEncodingYUV } },

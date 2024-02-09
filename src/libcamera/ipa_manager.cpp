@@ -138,7 +138,7 @@ IPAManager::IPAManager()
 	std::string root = utils::libcameraBuildPath();
 	if (!root.empty()) {
 		std::string ipaBuildPath = root + "src/ipa";
-		constexpr int maxDepth = 1;
+		constexpr int maxDepth = 2;
 
 		LOG(IPAManager, Info)
 			<< "libcamera is not installed. Adding '"
@@ -278,6 +278,19 @@ IPAModule *IPAManager::module(PipelineHandler *pipe, uint32_t minVersion,
  * \return A newly created IPA proxy, or nullptr if no matching IPA module is
  * found or if the IPA proxy fails to initialize
  */
+
+#if HAVE_IPA_PUBKEY
+/**
+ * \fn IPAManager::pubKey()
+ * \brief Retrieve the IPA module signing public key
+ *
+ * IPA module signature verification is normally handled internally by the
+ * IPAManager class. This function is meant to be used by utilities that need to
+ * verify signatures externally.
+ *
+ * \return The IPA module signing public key
+ */
+#endif
 
 bool IPAManager::isSignatureValid([[maybe_unused]] IPAModule *ipa) const
 {

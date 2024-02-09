@@ -5,7 +5,7 @@ PROJECT_NAME           = "libcamera"
 PROJECT_NUMBER         = "@VERSION@"
 PROJECT_BRIEF          = "Supporting cameras in Linux since 2019"
 
-OUTPUT_DIRECTORY       = Documentation
+OUTPUT_DIRECTORY       = "@OUTPUT_DIR@"
 
 STRIP_FROM_PATH        = "@TOP_SRCDIR@"
 
@@ -78,8 +78,11 @@ EXPAND_ONLY_PREDEF     = YES
 INCLUDE_PATH           = "@TOP_SRCDIR@/include/libcamera"
 INCLUDE_FILE_PATTERNS  = *.h
 
+IMAGE_PATH             = "@TOP_SRCDIR@/Documentation/images"
+
 PREDEFINED             = __DOXYGEN__ \
                          __cplusplus \
-                         __attribute__(x)=
+                         __attribute__(x)= \
+			 @PREDEFINED@
 
 HAVE_DOT               = YES

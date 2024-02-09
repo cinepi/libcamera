@@ -23,11 +23,13 @@
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
 #include <libcamera/framebuffer.h>
+#include <libcamera/request.h>
+#include <libcamera/stream.h>
+#include <libcamera/transform.h>
+
 #include <libcamera/ipa/core_ipa_interface.h>
 #include <libcamera/ipa/rkisp1_ipa_interface.h>
 #include <libcamera/ipa/rkisp1_ipa_proxy.h>
-#include <libcamera/request.h>
-#include <libcamera/stream.h>
 
 #include "libcamera/internal/camera.h"
 #include "libcamera/internal/camera_sensor.h"
@@ -123,6 +125,7 @@ public:
 	Status validate() override;
 
 	const V4L2SubdeviceFormat &sensorFormat() { return sensorFormat_; }
+	const Transform &combinedTransform() { return combinedTransform_; }
 
 private:
 	bool fitsAllPaths(const StreamConfiguration &cfg);
@@ -136,6 +139,7 @@ private:
 	const RkISP1CameraData *data_;
 
 	V4L2SubdeviceFormat sensorFormat_;
+	Transform combinedTransform_;
 };
 
 class PipelineHandlerRkISP1 : public PipelineHandler
@@ -144,7 +148,7 @@ public:
 	PipelineHandlerRkISP1(CameraManager *manager);
 
 	std::unique_ptr<CameraConfiguration> generateConfiguration(Camera *camera,
-		const StreamRoles &roles) override;
+								   Span<const StreamRole> roles) override;
 	int configure(Camera *camera, CameraConfiguration *config) override;
 
 	int exportFrameBuffers(Camera *camera, Stream *stream,
@@ -158,6 +162,8 @@ public:
 	bool match(DeviceEnumerator *enumerator) override;
 
 private:
+	static constexpr Size kRkISP1PreviewSize = { 1920, 1080 };
+
 	RkISP1CameraData *cameraData(Camera *camera)
 	{
 		return static_cast<RkISP1CameraData *>(camera->_d());
@@ -220,7 +226,7 @@ RkISP1FrameInfo *RkISP1Frames::create(const RkISP1CameraData *data, Request *req
 		}
 
 		if (pipe_->availableStatBuffers_.empty()) {
-			LOG(RkISP1, Error) << "Statisitc buffer underrun";
+			LOG(RkISP1, Error) << "Statistic buffer underrun";
 			return nullptr;
 		}
 
@@ -340,7 +346,7 @@ int RkISP1CameraData::loadIPA(unsigned int hwRevision)
 
 	/*
 	 * The API tuning file is made from the sensor name unless the
-	 * environment variable overrides it. If
+	 * environment variable overrides it.
 	 */
 	std::string ipaTuningFile;
 	char const *configFromEnv = utils::secure_getenv("LIBCAMERA_RKISP1_TUNING_FILE");
@@ -469,16 +475,16 @@ CameraConfiguration::Status RkISP1CameraConfiguration::validate()
 
 	status = validateColorSpaces(ColorSpaceFlag::StreamsShareColorSpace);
 
-	if (transform != Transform::Identity) {
-		transform = Transform::Identity;
-		status = Adjusted;
-	}
-
 	/* Cap the number of entries to the available streams. */
 	if (config_.size() > pathCount) {
 		config_.resize(pathCount);
 		status = Adjusted;
 	}
+
+	Orientation requestedOrientation = orientation;
+	combinedTransform_ = data_->sensor_->computeTransform(&orientation);
+	if (orientation != requestedOrientation)
+		status = Adjusted;
 
 	/*
 	 * Simultaneous capture of raw and processed streams isn't possible. If
@@ -603,7 +609,7 @@ PipelineHandlerRkISP1::PipelineHandlerRkISP1(CameraManager *manager)
 
 std::unique_ptr<CameraConfiguration>
 PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
-	const StreamRoles &roles)
+					     Span<const StreamRole> roles)
 {
 	RkISP1CameraData *data = cameraData(camera);
 
@@ -624,36 +630,37 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 	 * first stream and use it for all streams.
 	 */
 	std::optional<ColorSpace> colorSpace;
-
 	bool mainPathAvailable = true;
-	bool selfPathAvailable = data->selfPath_;
 
 	for (const StreamRole role : roles) {
-		bool useMainPath;
+		Size size;
 
 		switch (role) {
 		case StreamRole::StillCapture:
-			useMainPath = mainPathAvailable;
 			/* JPEG encoders typically expect sYCC. */
 			if (!colorSpace)
 				colorSpace = ColorSpace::Sycc;
+
+			size = data->sensor_->resolution();
 			break;
 
 		case StreamRole::Viewfinder:
-			useMainPath = !selfPathAvailable;
 			/*
 			 * sYCC is the YCbCr encoding of sRGB, which is commonly
 			 * used by displays.
 			 */
 			if (!colorSpace)
 				colorSpace = ColorSpace::Sycc;
+
+			size = kRkISP1PreviewSize;
 			break;
 
 		case StreamRole::VideoRecording:
-			useMainPath = !selfPathAvailable;
 			/* Rec. 709 is a good default for HD video recording. */
 			if (!colorSpace)
 				colorSpace = ColorSpace::Rec709;
+
+			size = kRkISP1PreviewSize;
 			break;
 
 		case StreamRole::Raw:
@@ -663,8 +670,8 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 				return nullptr;
 			}
 
-			useMainPath = true;
 			colorSpace = ColorSpace::Raw;
+			size = data->sensor_->resolution();
 			break;
 
 		default:
@@ -673,18 +680,25 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 			return nullptr;
 		}
 
+		/*
+		 * Prefer the main path if available, as it supports higher
+		 * resolutions.
+		 *
+		 * \todo Using the main path unconditionally hides support for
+		 * RGB (only available on the self path) in the streams formats
+		 * exposed to applications. This likely calls for a better API
+		 * to expose streams capabilities.
+		 */
 		RkISP1Path *path;
-
-		if (useMainPath) {
+		if (mainPathAvailable) {
 			path = data->mainPath_;
 			mainPathAvailable = false;
 		} else {
 			path = data->selfPath_;
-			selfPathAvailable = false;
 		}
 
 		StreamConfiguration cfg =
-			path->generateConfiguration(data->sensor_.get(), role);
+			path->generateConfiguration(data->sensor_.get(), size, role);
 		if (!cfg.pixelFormat.isValid())
 			return nullptr;
 
@@ -716,7 +730,7 @@ int PipelineHandlerRkISP1::configure(Camera *camera, CameraConfiguration *c)
 	V4L2SubdeviceFormat format = config->sensorFormat();
 	LOG(RkISP1, Debug) << "Configuring sensor with " << format;
 
-	ret = sensor->setFormat(&format);
+	ret = sensor->setFormat(&format, config->combinedTransform());
 	if (ret < 0)
 		return ret;
 

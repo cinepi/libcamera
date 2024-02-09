@@ -86,7 +86,8 @@ int V4L2Device::open(unsigned int flags)
 		return -EBUSY;
 	}
 
-	UniqueFD fd(syscall(SYS_openat, AT_FDCWD, deviceNode_.c_str(), flags));
+	UniqueFD fd(syscall(SYS_openat, AT_FDCWD, deviceNode_.c_str(),
+			    flags | O_CLOEXEC));
 	if (!fd.isValid()) {
 		int ret = -errno;
 		LOG(V4L2, Error) << "Failed to open V4L2 device '"
@@ -874,11 +875,7 @@ std::optional<ColorSpace> V4L2Device::toColorSpace(const T &v4l2Format,
 		 * the kernel for non-YUV formats as YCbCr encoding isn't
 		 * applicable in that case.
 		 */
-		/*
-		 * Raspberry Pi: don't do this because it turns our nice standard
-		 * colour spaces into non-standard ones.
-		 */
-		if (0 && colourEncoding != PixelFormatInfo::ColourEncodingYUV)
+		if (colourEncoding != PixelFormatInfo::ColourEncodingYUV)
 			colorSpace.ycbcrEncoding = ColorSpace::YcbcrEncoding::None;
 	}
 

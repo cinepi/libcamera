@@ -75,7 +75,7 @@ public:
 	PipelineHandlerUVC(CameraManager *manager);
 
 	std::unique_ptr<CameraConfiguration> generateConfiguration(Camera *camera,
-		const StreamRoles &roles) override;
+								   Span<const StreamRole> roles) override;
 	int configure(Camera *camera, CameraConfiguration *config) override;
 
 	int exportFrameBuffers(Camera *camera, Stream *stream,
@@ -111,8 +111,8 @@ CameraConfiguration::Status UVCCameraConfiguration::validate()
 	if (config_.empty())
 		return Invalid;
 
-	if (transform != Transform::Identity) {
-		transform = Transform::Identity;
+	if (orientation != Orientation::Rotate0) {
+		orientation = Orientation::Rotate0;
 		status = Adjusted;
 	}
 
@@ -180,7 +180,7 @@ PipelineHandlerUVC::PipelineHandlerUVC(CameraManager *manager)
 
 std::unique_ptr<CameraConfiguration>
 PipelineHandlerUVC::generateConfiguration(Camera *camera,
-	const StreamRoles &roles)
+					  Span<const StreamRole> roles)
 {
 	UVCCameraData *data = cameraData(camera);
 	std::unique_ptr<CameraConfiguration> config =

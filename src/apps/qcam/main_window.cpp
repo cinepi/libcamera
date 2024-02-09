@@ -362,7 +362,7 @@ void MainWindow::toggleCapture(bool start)
  */
 int MainWindow::startCapture()
 {
-	StreamRoles roles = StreamKeyValueParser::roles(options_[OptStream]);
+	std::vector<StreamRole> roles = StreamKeyValueParser::roles(options_[OptStream]);
 	int ret;
 
 	/* Verify roles are supported. */
@@ -381,11 +381,8 @@ int MainWindow::startCapture()
 		}
 		break;
 	default:
-		if (roles.size() != 1) {
-			qWarning() << "Unsupported stream configuration";
-			return -EINVAL;
-		}
-		break;
+		qWarning() << "Unsupported stream configuration";
+		return -EINVAL;
 	}
 
 	/* Configure the camera. */

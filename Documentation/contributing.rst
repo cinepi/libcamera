@@ -8,6 +8,10 @@ Whether you would like to help with coding, documentation, testing, proposing
 new features, or just discussing the project with the community, you can join
 our official public communication channels, or simply check out the code.
 
+The project adheres to a :ref:`code of conduct <code-of-conduct>` that
+maintainers, contributors and community members are expected to follow in all
+online and offline communication.
+
 Mailing List
 ------------
 
@@ -68,6 +72,13 @@ code that is as easy to read, understand and maintain as possible. This is
 made possible by a set of :ref:`coding-style-guidelines` that all submissions
 are expected to follow.
 
+We also care about the quality of commit messages. A good commit message not
+only describes what a commit does, but why it does so. By conveying clear
+information about the purpose of the commit, it helps speeding up reviews.
+Regardless of whether you're new to git or have years of experience,
+https://cbea.ms/git-commit/ is always a good guide to read to improve your
+commit message writing skills.
+
 The patch submission process for libcamera is similar to the Linux kernel, and
 goes through the `libcamera-devel`_ mailing list. If you have no previous
 experience with ``git-send-email``, or just experience trouble configuring it
@@ -127,4 +138,5 @@ By making a contribution to this project, I certify that:
 .. toctree::
    :hidden:
 
+   Code of Conduct <code-of-conduct>
    Coding Style <coding-style>

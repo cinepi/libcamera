@@ -55,7 +55,7 @@ CameraSession::CameraSession(CameraManager *cm,
 		return;
 	}
 
-	StreamRoles roles = StreamKeyValueParser::roles(options_[OptStream]);
+	std::vector<StreamRole> roles = StreamKeyValueParser::roles(options_[OptStream]);
 
 	std::unique_ptr<CameraConfiguration> config =
 		camera_->generateConfiguration(roles);
@@ -63,6 +63,24 @@ CameraSession::CameraSession(CameraManager *cm,
 		std::cerr << "Failed to get default stream configuration"
 			  << std::endl;
 		return;
+	}
+
+	if (options_.isSet(OptOrientation)) {
+		std::string orientOpt = options_[OptOrientation].toString();
+		static const std::map<std::string, libcamera::Orientation> orientations{
+			{ "rot0", libcamera::Orientation::Rotate0 },
+			{ "rot180", libcamera::Orientation::Rotate180 },
+			{ "mirror", libcamera::Orientation::Rotate0Mirror },
+			{ "flip", libcamera::Orientation::Rotate180Mirror },
+		};
+
+		auto orientation = orientations.find(orientOpt);
+		if (orientation == orientations.end()) {
+			std::cerr << "Invalid orientation " << orientOpt << std::endl;
+			return;
+		}
+
+		config->orientation = orientation->second;
 	}
 
 	/* Apply configuration if explicitly requested. */

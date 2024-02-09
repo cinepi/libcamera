@@ -17,7 +17,7 @@
 #include <libcamera/libcamera.h>
 
 #include <pybind11/functional.h>
-#include <pybind11/smart_holder.h>
+#include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
 
@@ -35,16 +35,63 @@ LOG_DEFINE_CATEGORY(Python)
 }
 
 /*
+ * This is a holder class used only for the Camera class, for the sole purpose
+ * of avoiding the compilation issue with Camera's private destructor.
+ *
+ * pybind11 requires a public destructor for classes held with shared_ptrs, even
+ * in cases where the public destructor is not strictly needed. The current
+ * understanding is that there are the following options to solve the problem:
+ *
+ * - Use pybind11 'smart_holder' branch. The downside is that 'smart_holder'
+ *   is not the mainline branch, and not available in distributions.
+ * - https://github.com/pybind/pybind11/pull/2067
+ * - Make the Camera destructor public
+ * - Something like the PyCameraSmartPtr here, which adds a layer, hiding the
+ *   issue.
+ */
+template<typename T>
+class PyCameraSmartPtr
+{
+public:
+	using element_type = T;
+
+	PyCameraSmartPtr()
+	{
+	}
+
+	explicit PyCameraSmartPtr(T *)
+	{
+		throw std::runtime_error("invalid SmartPtr constructor call");
+	}
+
+	explicit PyCameraSmartPtr(std::shared_ptr<T> p)
+		: ptr_(p)
+	{
+	}
+
+	T *get() const { return ptr_.get(); }
+
+	operator std::shared_ptr<T>() const { return ptr_; }
+
+private:
+	std::shared_ptr<T> ptr_;
+};
+
+PYBIND11_DECLARE_HOLDER_TYPE(T, PyCameraSmartPtr<T>)
+
+/*
  * Note: global C++ destructors can be ran on this before the py module is
  * destructed.
  */
 static std::weak_ptr<PyCameraManager> gCameraManager;
 
-void init_py_enums(py::module &m);
+void init_py_color_space(py::module &m);
 void init_py_controls_generated(py::module &m);
+void init_py_enums(py::module &m);
 void init_py_formats_generated(py::module &m);
 void init_py_geometry(py::module &m);
 void init_py_properties_generated(py::module &m);
+void init_py_transform(py::module &m);
 
 PYBIND11_MODULE(_libcamera, m)
 {
@@ -52,6 +99,8 @@ PYBIND11_MODULE(_libcamera, m)
 	init_py_controls_generated(m);
 	init_py_geometry(m);
 	init_py_properties_generated(m);
+	init_py_color_space(m);
+	init_py_transform(m);
 
 	/* Forward declarations */
 
@@ -61,8 +110,9 @@ PYBIND11_MODULE(_libcamera, m)
 	 * https://pybind11.readthedocs.io/en/latest/advanced/misc.html#avoiding-c-types-in-docstrings
 	 */
 
-	auto pyCameraManager = py::class_<PyCameraManager>(m, "CameraManager");
-	auto pyCamera = py::class_<Camera>(m, "Camera");
+	auto pyCameraManager = py::class_<PyCameraManager, std::shared_ptr<PyCameraManager>>(m, "CameraManager");
+	auto pyCamera = py::class_<Camera, PyCameraSmartPtr<Camera>>(m, "Camera");
+	auto pySensorConfiguration = py::class_<SensorConfiguration>(m, "SensorConfiguration");
 	auto pyCameraConfiguration = py::class_<CameraConfiguration>(m, "CameraConfiguration");
 	auto pyCameraConfigurationStatus = py::enum_<CameraConfiguration::Status>(pyCameraConfiguration, "Status");
 	auto pyStreamConfiguration = py::class_<StreamConfiguration>(m, "StreamConfiguration");
@@ -79,12 +129,6 @@ PYBIND11_MODULE(_libcamera, m)
 	auto pyFrameMetadata = py::class_<FrameMetadata>(m, "FrameMetadata");
 	auto pyFrameMetadataStatus = py::enum_<FrameMetadata::Status>(pyFrameMetadata, "Status");
 	auto pyFrameMetadataPlane = py::class_<FrameMetadata::Plane>(pyFrameMetadata, "Plane");
-	auto pyTransform = py::class_<Transform>(m, "Transform");
-	auto pyColorSpace = py::class_<ColorSpace>(m, "ColorSpace");
-	auto pyColorSpacePrimaries = py::enum_<ColorSpace::Primaries>(pyColorSpace, "Primaries");
-	auto pyColorSpaceTransferFunction = py::enum_<ColorSpace::TransferFunction>(pyColorSpace, "TransferFunction");
-	auto pyColorSpaceYcbcrEncoding = py::enum_<ColorSpace::YcbcrEncoding>(pyColorSpace, "YcbcrEncoding");
-	auto pyColorSpaceRange = py::enum_<ColorSpace::Range>(pyColorSpace, "Range");
 	auto pyPixelFormat = py::class_<PixelFormat>(m, "PixelFormat");
 
 	init_py_formats_generated(m);
@@ -105,7 +149,7 @@ PYBIND11_MODULE(_libcamera, m)
 			return cm;
 		})
 
-		.def_property_readonly("version", &PyCameraManager::version)
+		.def_property_readonly_static("version", [](py::object /* self */) { return PyCameraManager::version(); })
 		.def("get", &PyCameraManager::get, py::keep_alive<0, 1>())
 		.def_property_readonly("cameras", &PyCameraManager::cameras)
 
@@ -114,8 +158,18 @@ PYBIND11_MODULE(_libcamera, m)
 
 	pyCamera
 		.def_property_readonly("id", &Camera::id)
-		.def("acquire", &Camera::acquire)
-		.def("release", &Camera::release)
+		.def("acquire", [](Camera &self) {
+			int ret = self.acquire();
+			if (ret)
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to acquire camera");
+		})
+		.def("release", [](Camera &self) {
+			int ret = self.release();
+			if (ret)
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to release camera");
+		})
 		.def("start", [](Camera &self,
 		                 const std::unordered_map<const ControlId *, py::object> &controls) {
 			/* \todo What happens if someone calls start() multiple times? */
@@ -127,7 +181,7 @@ PYBIND11_MODULE(_libcamera, m)
 
 			ControlList controlList(self.controls());
 
-			for (const auto& [id, obj]: controls) {
+			for (const auto &[id, obj] : controls) {
 				auto val = pyToControlValue(obj, id->type());
 				controlList.set(id->id(), val);
 			}
@@ -135,20 +189,19 @@ PYBIND11_MODULE(_libcamera, m)
 			int ret = self.start(&controlList);
 			if (ret) {
 				self.requestCompleted.disconnect();
-				return ret;
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to start camera");
 			}
-
-			return 0;
 		}, py::arg("controls") = std::unordered_map<const ControlId *, py::object>())
 
 		.def("stop", [](Camera &self) {
 			int ret = self.stop();
-			if (ret)
-				return ret;
 
 			self.requestCompleted.disconnect();
 
-			return 0;
+			if (ret)
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to stop camera");
 		})
 
 		.def("__str__", [](Camera &self) {
@@ -156,10 +209,24 @@ PYBIND11_MODULE(_libcamera, m)
 		})
 
 		/* Keep the camera alive, as StreamConfiguration contains a Stream* */
-		.def("generate_configuration", &Camera::generateConfiguration, py::keep_alive<0, 1>())
-		.def("configure", &Camera::configure)
+		.def("generate_configuration", [](Camera &self, const std::vector<StreamRole> &roles) {
+			return self.generateConfiguration(roles);
+		}, py::keep_alive<0, 1>())
 
-		.def("create_request", &Camera::createRequest, py::arg("cookie") = 0)
+		.def("configure", [](Camera &self, CameraConfiguration *config) {
+			int ret = self.configure(config);
+			if (ret)
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to configure camera");
+		})
+
+		.def("create_request", [](Camera &self, uint64_t cookie) {
+			std::unique_ptr<Request> req = self.createRequest(cookie);
+			if (!req)
+				throw std::system_error(ENOMEM, std::generic_category(),
+							"Failed to create request");
+			return req;
+		}, py::arg("cookie") = 0)
 
 		.def("queue_request", [](Camera &self, Request *req) {
 			py::object py_req = py::cast(req);
@@ -172,10 +239,11 @@ PYBIND11_MODULE(_libcamera, m)
 			py_req.inc_ref();
 
 			int ret = self.queueRequest(req);
-			if (ret)
+			if (ret) {
 				py_req.dec_ref();
-
-			return ret;
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to queue request");
+			}
 		})
 
 		.def_property_readonly("streams", [](Camera &self) {
@@ -214,6 +282,40 @@ PYBIND11_MODULE(_libcamera, m)
 			return ret;
 		});
 
+	pySensorConfiguration
+		.def(py::init<>())
+		.def_readwrite("bit_depth", &SensorConfiguration::bitDepth)
+		.def_readwrite("analog_crop", &SensorConfiguration::analogCrop)
+		.def_property(
+			"binning",
+			[](SensorConfiguration &self) {
+				return py::make_tuple(self.binning.binX, self.binning.binY);
+			},
+			[](SensorConfiguration &self, py::object value) {
+				auto vec = value.cast<std::vector<unsigned int>>();
+				if (vec.size() != 2)
+					throw std::runtime_error("binning requires iterable of 2 values");
+				self.binning.binX = vec[0];
+				self.binning.binY = vec[1];
+			})
+		.def_property(
+			"skipping",
+			[](SensorConfiguration &self) {
+				return py::make_tuple(self.skipping.xOddInc, self.skipping.xEvenInc,
+						      self.skipping.yOddInc, self.skipping.yEvenInc);
+			},
+			[](SensorConfiguration &self, py::object value) {
+				auto vec = value.cast<std::vector<unsigned int>>();
+				if (vec.size() != 4)
+					throw std::runtime_error("skipping requires iterable of 4 values");
+				self.skipping.xOddInc = vec[0];
+				self.skipping.xEvenInc = vec[1];
+				self.skipping.yOddInc = vec[2];
+				self.skipping.yEvenInc = vec[3];
+			})
+		.def_readwrite("output_size", &SensorConfiguration::outputSize)
+		.def("is_valid", &SensorConfiguration::isValid);
+
 	pyCameraConfiguration
 		.def("__iter__", [](CameraConfiguration &self) {
 			return py::make_iterator<py::return_value_policy::reference_internal>(self);
@@ -226,7 +328,8 @@ PYBIND11_MODULE(_libcamera, m)
 		     py::return_value_policy::reference_internal)
 		.def_property_readonly("size", &CameraConfiguration::size)
 		.def_property_readonly("empty", &CameraConfiguration::empty)
-		.def_readwrite("transform", &CameraConfiguration::transform);
+		.def_readwrite("sensor_config", &CameraConfiguration::sensorConfig)
+		.def_readwrite("orientation", &CameraConfiguration::orientation);
 
 	pyCameraConfigurationStatus
 		.value("Valid", CameraConfiguration::Valid)
@@ -252,8 +355,14 @@ PYBIND11_MODULE(_libcamera, m)
 		.def("range", &StreamFormats::range);
 
 	pyFrameBufferAllocator
-		.def(py::init<std::shared_ptr<Camera>>(), py::keep_alive<1, 2>())
-		.def("allocate", &FrameBufferAllocator::allocate)
+		.def(py::init<PyCameraSmartPtr<Camera>>(), py::keep_alive<1, 2>())
+		.def("allocate", [](FrameBufferAllocator &self, Stream *stream) {
+			int ret = self.allocate(stream);
+			if (ret < 0)
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to allocate buffers");
+			return ret;
+		})
 		.def_property_readonly("allocated", &FrameBufferAllocator::allocated)
 		/* Create a list of FrameBuffers, where each FrameBuffer has a keep-alive to FrameBufferAllocator */
 		.def("buffers", [](FrameBufferAllocator &self, Stream *stream) {
@@ -330,11 +439,15 @@ PYBIND11_MODULE(_libcamera, m)
 	pyRequest
 		/* \todo Fence is not supported, so we cannot expose addBuffer() directly */
 		.def("add_buffer", [](Request &self, const Stream *stream, FrameBuffer *buffer) {
-			return self.addBuffer(stream, buffer);
+			int ret = self.addBuffer(stream, buffer);
+			if (ret)
+				throw std::system_error(-ret, std::generic_category(),
+							"Failed to add buffer");
 		}, py::keep_alive<1, 3>()) /* Request keeps Framebuffer alive */
 		.def_property_readonly("status", &Request::status)
 		.def_property_readonly("buffers", &Request::buffers)
 		.def_property_readonly("cookie", &Request::cookie)
+		.def_property_readonly("sequence", &Request::sequence)
 		.def_property_readonly("has_pending_buffers", &Request::hasPendingBuffers)
 		.def("set_control", [](Request &self, const ControlId &id, py::object value) {
 			self.controls().set(id.id(), pyToControlValue(value, id.type()));
@@ -386,109 +499,6 @@ PYBIND11_MODULE(_libcamera, m)
 
 	pyFrameMetadataPlane
 		.def_readwrite("bytes_used", &FrameMetadata::Plane::bytesused);
-
-	pyTransform
-		.def(py::init([](int rotation, bool hflip, bool vflip, bool transpose) {
-			bool ok;
-
-			Transform t = transformFromRotation(rotation, &ok);
-			if (!ok)
-				throw std::invalid_argument("Invalid rotation");
-
-			if (hflip)
-				t ^= Transform::HFlip;
-			if (vflip)
-				t ^= Transform::VFlip;
-			if (transpose)
-				t ^= Transform::Transpose;
-			return t;
-		}), py::arg("rotation") = 0, py::arg("hflip") = false,
-		    py::arg("vflip") = false, py::arg("transpose") = false)
-		.def(py::init([](Transform &other) { return other; }))
-		.def("__str__", [](Transform &self) {
-			return "<libcamera.Transform '" + std::string(transformToString(self)) + "'>";
-		})
-		.def_property("hflip",
-			      [](Transform &self) {
-				      return !!(self & Transform::HFlip);
-			      },
-			      [](Transform &self, bool hflip) {
-				      if (hflip)
-					      self |= Transform::HFlip;
-				      else
-					      self &= ~Transform::HFlip;
-			      })
-		.def_property("vflip",
-			      [](Transform &self) {
-				      return !!(self & Transform::VFlip);
-			      },
-			      [](Transform &self, bool vflip) {
-				      if (vflip)
-					      self |= Transform::VFlip;
-				      else
-					      self &= ~Transform::VFlip;
-			      })
-		.def_property("transpose",
-			      [](Transform &self) {
-				      return !!(self & Transform::Transpose);
-			      },
-			      [](Transform &self, bool transpose) {
-				      if (transpose)
-					      self |= Transform::Transpose;
-				      else
-					      self &= ~Transform::Transpose;
-			      })
-		.def("inverse", [](Transform &self) { return -self; })
-		.def("invert", [](Transform &self) {
-			self = -self;
-		})
-		.def("compose", [](Transform &self, Transform &other) {
-			self = self * other;
-		});
-
-	pyColorSpace
-		.def(py::init([](ColorSpace::Primaries primaries,
-				 ColorSpace::TransferFunction transferFunction,
-				 ColorSpace::YcbcrEncoding ycbcrEncoding,
-				 ColorSpace::Range range) {
-			return ColorSpace(primaries, transferFunction, ycbcrEncoding, range);
-		}), py::arg("primaries"), py::arg("transferFunction"),
-		    py::arg("ycbcrEncoding"), py::arg("range"))
-		.def(py::init([](ColorSpace &other) { return other; }))
-		.def("__str__", [](ColorSpace &self) {
-			return "<libcamera.ColorSpace '" + self.toString() + "'>";
-		})
-		.def_readwrite("primaries", &ColorSpace::primaries)
-		.def_readwrite("transferFunction", &ColorSpace::transferFunction)
-		.def_readwrite("ycbcrEncoding", &ColorSpace::ycbcrEncoding)
-		.def_readwrite("range", &ColorSpace::range)
-		.def_static("Raw", []() { return ColorSpace::Raw; })
-		.def_static("Srgb", []() { return ColorSpace::Srgb; })
-		.def_static("Sycc", []() { return ColorSpace::Sycc; })
-		.def_static("Smpte170m", []() { return ColorSpace::Smpte170m; })
-		.def_static("Rec709", []() { return ColorSpace::Rec709; })
-		.def_static("Rec2020", []() { return ColorSpace::Rec2020; });
-
-	pyColorSpacePrimaries
-		.value("Raw", ColorSpace::Primaries::Raw)
-		.value("Smpte170m", ColorSpace::Primaries::Smpte170m)
-		.value("Rec709", ColorSpace::Primaries::Rec709)
-		.value("Rec2020", ColorSpace::Primaries::Rec2020);
-
-	pyColorSpaceTransferFunction
-		.value("Linear", ColorSpace::TransferFunction::Linear)
-		.value("Srgb", ColorSpace::TransferFunction::Srgb)
-		.value("Rec709", ColorSpace::TransferFunction::Rec709);
-
-	pyColorSpaceYcbcrEncoding
-		.value("Null", ColorSpace::YcbcrEncoding::None)
-		.value("Rec601", ColorSpace::YcbcrEncoding::Rec601)
-		.value("Rec709", ColorSpace::YcbcrEncoding::Rec709)
-		.value("Rec2020", ColorSpace::YcbcrEncoding::Rec2020);
-
-	pyColorSpaceRange
-		.value("Full", ColorSpace::Range::Full)
-		.value("Limited", ColorSpace::Range::Limited);
 
 	pyPixelFormat
 		.def(py::init<>())

@@ -174,6 +174,10 @@ extern "C" {
 #define DRM_FORMAT_RGBA1010102	fourcc_code('R', 'A', '3', '0') /* [31:0] R:G:B:A 10:10:10:2 little endian */
 #define DRM_FORMAT_BGRA1010102	fourcc_code('B', 'A', '3', '0') /* [31:0] B:G:R:A 10:10:10:2 little endian */
 
+/* 48 bpp RGB */
+#define DRM_FORMAT_RGB161616	fourcc_code('R', 'G', '4', '8') /* [48:0] R:G:B 16:16:16 little endian */
+#define DRM_FORMAT_BGR161616	fourcc_code('B', 'G', '4', '8') /* [48:0] R:G:B 16:16:16 little endian */
+
 /* 64 bpp RGB */
 #define DRM_FORMAT_XRGB16161616	fourcc_code('X', 'R', '4', '8') /* [63:0] x:R:G:B 16:16:16:16 little endian */
 #define DRM_FORMAT_XBGR16161616	fourcc_code('X', 'B', '4', '8') /* [63:0] x:B:G:R 16:16:16:16 little endian */
@@ -448,6 +452,7 @@ extern "C" {
 #define DRM_FORMAT_MOD_VENDOR_ALLWINNER 0x09
 #define DRM_FORMAT_MOD_VENDOR_AMLOGIC 0x0a
 #define DRM_FORMAT_MOD_VENDOR_MIPI 0x0b
+#define DRM_FORMAT_MOD_VENDOR_RPI 0x0c
 
 /* add more to the end as needed */
 
@@ -1553,6 +1558,10 @@ drm_fourcc_canonicalize_nvidia_format_mod(__u64 modifier)
  *   pixel, in the same order.
  */
 #define MIPI_FORMAT_MOD_CSI2_PACKED fourcc_mod_code(MIPI, 1)
+
+#define PISP_FORMAT_MOD_COMPRESS_MODE1 fourcc_mod_code(RPI, 1)
+#define PISP_FORMAT_MOD_COMPRESS_MODE2 fourcc_mod_code(RPI, 2)
+#define PISP_FORMAT_MOD_VERIFICATION fourcc_mod_code(RPI, 3)
 
 #if defined(__cplusplus)
 }

@@ -59,6 +59,10 @@ public:
 		return stream - &*streams_.begin();
 	}
 
+	unsigned int getRawMediaBusFormat(PixelFormat *pixelFormat) const;
+	unsigned int getYuvMediaBusFormat(const PixelFormat &pixelFormat) const;
+	unsigned int getMediaBusFormat(PixelFormat *pixelFormat) const;
+
 	std::unique_ptr<CameraSensor> sensor_;
 	std::unique_ptr<V4L2Subdevice> csis_;
 
@@ -72,18 +76,6 @@ public:
 class ISICameraConfiguration : public CameraConfiguration
 {
 public:
-	/*
-	 * formatsMap_ records the association between an output pixel format
-	 * and the combination of V4L2 pixel format and media bus codes that have
-	 * to be applied to the pipeline.
-	 */
-	struct PipeFormat {
-		unsigned int isiCode;
-		unsigned int sensorCode;
-	};
-
-	using FormatMap = std::map<PixelFormat, PipeFormat>;
-
 	ISICameraConfiguration(ISICameraData *data)
 		: data_(data)
 	{
@@ -91,7 +83,7 @@ public:
 
 	Status validate() override;
 
-	static const FormatMap formatsMap_;
+	static const std::map<PixelFormat, unsigned int> formatsMap_;
 
 	V4L2SubdeviceFormat sensorFormat_;
 
@@ -112,7 +104,7 @@ public:
 	bool match(DeviceEnumerator *enumerator) override;
 
 	std::unique_ptr<CameraConfiguration>
-	generateConfiguration(Camera *camera, const StreamRoles &roles) override;
+	generateConfiguration(Camera *camera, Span<const StreamRole> roles) override;
 	int configure(Camera *camera, CameraConfiguration *config) override;
 
 	int exportFrameBuffers(Camera *camera, Stream *stream,
@@ -140,6 +132,10 @@ private:
 	}
 
 	Pipe *pipeFromStream(Camera *camera, const Stream *stream);
+
+	StreamConfiguration generateYUVConfiguration(Camera *camera,
+						     const Size &size);
+	StreamConfiguration generateRawConfiguration(Camera *camera);
 
 	void bufferReady(FrameBuffer *buffer);
 
@@ -174,125 +170,187 @@ int ISICameraData::init()
 	return 0;
 }
 
+/*
+ * Get a RAW Bayer media bus format compatible with the requested pixelFormat.
+ *
+ * If the requested pixelFormat cannot be produced by the sensor adjust it to
+ * the one corresponding to the media bus format with the largest bit-depth.
+ */
+unsigned int ISICameraData::getRawMediaBusFormat(PixelFormat *pixelFormat) const
+{
+	std::vector<unsigned int> mbusCodes = sensor_->mbusCodes();
+
+	static const std::map<PixelFormat, unsigned int> rawFormats = {
+		{ formats::SBGGR8, MEDIA_BUS_FMT_SBGGR8_1X8 },
+		{ formats::SGBRG8, MEDIA_BUS_FMT_SGBRG8_1X8 },
+		{ formats::SGRBG8, MEDIA_BUS_FMT_SGRBG8_1X8 },
+		{ formats::SRGGB8, MEDIA_BUS_FMT_SRGGB8_1X8 },
+		{ formats::SBGGR10, MEDIA_BUS_FMT_SBGGR10_1X10 },
+		{ formats::SGBRG10, MEDIA_BUS_FMT_SGBRG10_1X10 },
+		{ formats::SGRBG10, MEDIA_BUS_FMT_SGRBG10_1X10 },
+		{ formats::SRGGB10, MEDIA_BUS_FMT_SRGGB10_1X10 },
+		{ formats::SBGGR12, MEDIA_BUS_FMT_SBGGR12_1X12 },
+		{ formats::SGBRG12, MEDIA_BUS_FMT_SGBRG12_1X12 },
+		{ formats::SGRBG12, MEDIA_BUS_FMT_SGRBG12_1X12 },
+		{ formats::SRGGB12, MEDIA_BUS_FMT_SRGGB12_1X12 },
+		{ formats::SBGGR14, MEDIA_BUS_FMT_SBGGR14_1X14 },
+		{ formats::SGBRG14, MEDIA_BUS_FMT_SGBRG14_1X14 },
+		{ formats::SGRBG14, MEDIA_BUS_FMT_SGRBG14_1X14 },
+		{ formats::SRGGB14, MEDIA_BUS_FMT_SRGGB14_1X14 },
+	};
+
+	/*
+	 * Make sure the requested PixelFormat is supported in the above
+	 * map and the sensor can produce the compatible mbus code.
+	 */
+	auto it = rawFormats.find(*pixelFormat);
+	if (it != rawFormats.end() &&
+	    std::count(mbusCodes.begin(), mbusCodes.end(), it->second))
+		return it->second;
+
+	if (it == rawFormats.end())
+		LOG(ISI, Warning) << pixelFormat
+				  << " not supported in ISI formats map.";
+
+	/*
+	 * The desired pixel format cannot be produced. Adjust it to the one
+	 * corresponding to the raw media bus format with the largest bit-depth
+	 * the sensor provides.
+	 */
+	unsigned int sensorCode = 0;
+	unsigned int maxDepth = 0;
+	*pixelFormat = {};
+
+	for (unsigned int code : mbusCodes) {
+		/* Make sure the media bus format is RAW Bayer. */
+		const BayerFormat &bayerFormat = BayerFormat::fromMbusCode(code);
+		if (!bayerFormat.isValid())
+			continue;
+
+		/* Make sure the media format is supported. */
+		it = std::find_if(rawFormats.begin(), rawFormats.end(),
+				  [code](auto &rawFormat) {
+					  return rawFormat.second == code;
+				  });
+
+		if (it == rawFormats.end()) {
+			LOG(ISI, Warning) << bayerFormat
+					  << " not supported in ISI formats map.";
+			continue;
+		}
+
+		/* Pick the one with the largest bit depth. */
+		if (bayerFormat.bitDepth > maxDepth) {
+			maxDepth = bayerFormat.bitDepth;
+			*pixelFormat = it->first;
+			sensorCode = code;
+		}
+	}
+
+	if (!pixelFormat->isValid())
+		LOG(ISI, Error) << "Cannot find a supported RAW format";
+
+	return sensorCode;
+}
+
+/*
+ * Get a YUV/RGB media bus format from which the ISI can produce a processed
+ * stream, preferring codes with the same colour encoding as the requested
+ * pixelformat.
+ *
+ * If the sensor does not provide any YUV/RGB media bus format the ISI cannot
+ * generate any processed pixel format as it cannot debayer.
+ */
+unsigned int ISICameraData::getYuvMediaBusFormat(const PixelFormat &pixelFormat) const
+{
+	std::vector<unsigned int> mbusCodes = sensor_->mbusCodes();
+
+	/*
+	 * The ISI can produce YUV/RGB pixel formats from any non-RAW Bayer
+	 * media bus formats.
+	 *
+	 * Keep the list in sync with the mxc_isi_bus_formats[] array in
+	 * the ISI driver.
+	 */
+	std::vector<unsigned int> yuvCodes = {
+		MEDIA_BUS_FMT_UYVY8_1X16,
+		MEDIA_BUS_FMT_YUV8_1X24,
+		MEDIA_BUS_FMT_RGB565_1X16,
+		MEDIA_BUS_FMT_RGB888_1X24,
+	};
+
+	std::sort(mbusCodes.begin(), mbusCodes.end());
+	std::sort(yuvCodes.begin(), yuvCodes.end());
+
+	std::vector<unsigned int> supportedCodes;
+	std::set_intersection(mbusCodes.begin(), mbusCodes.end(),
+			      yuvCodes.begin(), yuvCodes.end(),
+			      std::back_inserter(supportedCodes));
+
+	if (supportedCodes.empty()) {
+		LOG(ISI, Warning) << "Cannot find a supported YUV/RGB format";
+
+		return 0;
+	}
+
+	/* Prefer codes with the same encoding as the requested pixel format. */
+	const PixelFormatInfo &info = PixelFormatInfo::info(pixelFormat);
+	for (unsigned int code : supportedCodes) {
+		if (info.colourEncoding == PixelFormatInfo::ColourEncodingYUV &&
+		    (code == MEDIA_BUS_FMT_UYVY8_1X16 ||
+		     code == MEDIA_BUS_FMT_YUV8_1X24))
+			return code;
+
+		if (info.colourEncoding == PixelFormatInfo::ColourEncodingRGB &&
+		    (code == MEDIA_BUS_FMT_RGB565_1X16 ||
+		     code == MEDIA_BUS_FMT_RGB888_1X24))
+			return code;
+	}
+
+	/* Otherwise return the first found code. */
+	return supportedCodes[0];
+}
+
+unsigned int ISICameraData::getMediaBusFormat(PixelFormat *pixelFormat) const
+{
+	if (PixelFormatInfo::info(*pixelFormat).colourEncoding ==
+	    PixelFormatInfo::ColourEncodingRAW)
+		return getRawMediaBusFormat(pixelFormat);
+
+	return getYuvMediaBusFormat(*pixelFormat);
+}
+
 /* -----------------------------------------------------------------------------
  * Camera Configuration
  */
 
-/**
- * \todo Do not associate the sensor format to non-RAW pixelformats, as
- * the ISI can do colorspace conversion.
+/*
+ * ISICameraConfiguration::formatsMap_ records the association between an output
+ * pixel format and the ISI source pixel format to be applied to the pipeline.
  */
-const ISICameraConfiguration::FormatMap ISICameraConfiguration::formatsMap_ = {
-	{
-		formats::YUYV,
-		{ MEDIA_BUS_FMT_YUV8_1X24,
-		  MEDIA_BUS_FMT_UYVY8_1X16 },
-	},
-	{
-		formats::AVUY8888,
-		{ MEDIA_BUS_FMT_YUV8_1X24,
-		  MEDIA_BUS_FMT_UYVY8_1X16 },
-	},
-	{
-		formats::NV12,
-		{ MEDIA_BUS_FMT_YUV8_1X24,
-		  MEDIA_BUS_FMT_UYVY8_1X16 },
-	},
-	{
-		formats::NV16,
-		{ MEDIA_BUS_FMT_YUV8_1X24,
-		  MEDIA_BUS_FMT_UYVY8_1X16 },
-	},
-	{
-		formats::YUV444,
-		{ MEDIA_BUS_FMT_YUV8_1X24,
-		  MEDIA_BUS_FMT_UYVY8_1X16 },
-	},
-	{
-		formats::RGB565,
-		{ MEDIA_BUS_FMT_RGB888_1X24,
-		  MEDIA_BUS_FMT_RGB565_1X16 },
-	},
-	{
-		formats::BGR888,
-		{ MEDIA_BUS_FMT_RGB888_1X24,
-		  MEDIA_BUS_FMT_RGB565_1X16 },
-	},
-	{
-		formats::RGB888,
-		{ MEDIA_BUS_FMT_RGB888_1X24,
-		  MEDIA_BUS_FMT_RGB565_1X16 },
-	},
-	{
-		formats::XRGB8888,
-		{ MEDIA_BUS_FMT_RGB888_1X24,
-		  MEDIA_BUS_FMT_RGB565_1X16 },
-	},
-	{
-		formats::ABGR8888,
-		{ MEDIA_BUS_FMT_RGB888_1X24,
-		  MEDIA_BUS_FMT_RGB565_1X16 },
-	},
-	{
-		formats::SBGGR8,
-		{ MEDIA_BUS_FMT_SBGGR8_1X8,
-		  MEDIA_BUS_FMT_SBGGR8_1X8 },
-	},
-	{
-		formats::SGBRG8,
-		{ MEDIA_BUS_FMT_SGBRG8_1X8,
-		  MEDIA_BUS_FMT_SGBRG8_1X8 },
-	},
-	{
-		formats::SGRBG8,
-		{ MEDIA_BUS_FMT_SGRBG8_1X8,
-		  MEDIA_BUS_FMT_SGRBG8_1X8 },
-	},
-	{
-		formats::SRGGB8,
-		{ MEDIA_BUS_FMT_SRGGB8_1X8,
-		  MEDIA_BUS_FMT_SRGGB8_1X8 },
-	},
-	{
-		formats::SBGGR10,
-		{ MEDIA_BUS_FMT_SBGGR10_1X10,
-		  MEDIA_BUS_FMT_SBGGR10_1X10 },
-	},
-	{
-		formats::SGBRG10,
-		{ MEDIA_BUS_FMT_SGBRG10_1X10,
-		  MEDIA_BUS_FMT_SGBRG10_1X10 },
-	},
-	{
-		formats::SGRBG10,
-		{ MEDIA_BUS_FMT_SGRBG10_1X10,
-		  MEDIA_BUS_FMT_SGRBG10_1X10 },
-	},
-	{
-		formats::SRGGB10,
-		{ MEDIA_BUS_FMT_SRGGB10_1X10,
-		  MEDIA_BUS_FMT_SRGGB10_1X10 },
-	},
-	{
-		formats::SBGGR12,
-		{ MEDIA_BUS_FMT_SBGGR12_1X12,
-		  MEDIA_BUS_FMT_SBGGR12_1X12 },
-	},
-	{
-		formats::SGBRG12,
-		{ MEDIA_BUS_FMT_SGBRG12_1X12,
-		  MEDIA_BUS_FMT_SGBRG12_1X12 },
-	},
-	{
-		formats::SGRBG12,
-		{ MEDIA_BUS_FMT_SGRBG12_1X12,
-		  MEDIA_BUS_FMT_SGRBG12_1X12 },
-	},
-	{
-		formats::SRGGB12,
-		{ MEDIA_BUS_FMT_SRGGB12_1X12,
-		  MEDIA_BUS_FMT_SRGGB12_1X12 },
-	},
+const std::map<PixelFormat, unsigned int> ISICameraConfiguration::formatsMap_ = {
+	{ formats::YUYV, MEDIA_BUS_FMT_YUV8_1X24 },
+	{ formats::AVUY8888, MEDIA_BUS_FMT_YUV8_1X24 },
+	{ formats::NV12, MEDIA_BUS_FMT_YUV8_1X24 },
+	{ formats::NV16, MEDIA_BUS_FMT_YUV8_1X24 },
+	{ formats::YUV444, MEDIA_BUS_FMT_YUV8_1X24 },
+	{ formats::RGB565, MEDIA_BUS_FMT_RGB888_1X24 },
+	{ formats::BGR888, MEDIA_BUS_FMT_RGB888_1X24 },
+	{ formats::RGB888, MEDIA_BUS_FMT_RGB888_1X24 },
+	{ formats::XRGB8888, MEDIA_BUS_FMT_RGB888_1X24 },
+	{ formats::ABGR8888, MEDIA_BUS_FMT_RGB888_1X24 },
+	{ formats::SBGGR8, MEDIA_BUS_FMT_SBGGR8_1X8 },
+	{ formats::SGBRG8, MEDIA_BUS_FMT_SGBRG8_1X8 },
+	{ formats::SGRBG8, MEDIA_BUS_FMT_SGRBG8_1X8 },
+	{ formats::SRGGB8, MEDIA_BUS_FMT_SRGGB8_1X8 },
+	{ formats::SBGGR10, MEDIA_BUS_FMT_SBGGR10_1X10 },
+	{ formats::SGBRG10, MEDIA_BUS_FMT_SGBRG10_1X10 },
+	{ formats::SGRBG10, MEDIA_BUS_FMT_SGRBG10_1X10 },
+	{ formats::SRGGB10, MEDIA_BUS_FMT_SRGGB10_1X10 },
+	{ formats::SBGGR12, MEDIA_BUS_FMT_SBGGR12_1X12 },
+	{ formats::SGBRG12, MEDIA_BUS_FMT_SGBRG12_1X12 },
+	{ formats::SGRBG12, MEDIA_BUS_FMT_SGRBG12_1X12 },
+	{ formats::SRGGB12, MEDIA_BUS_FMT_SRGGB12_1X12 },
 };
 
 /*
@@ -311,50 +369,19 @@ ISICameraConfiguration::validateRaw(std::set<Stream *> &availableStreams,
 	 */
 	std::vector<unsigned int> mbusCodes = data_->sensor_->mbusCodes();
 	StreamConfiguration &rawConfig = config_[0];
+	PixelFormat rawFormat = rawConfig.pixelFormat;
 
-	bool supported = false;
-	auto it = formatsMap_.find(rawConfig.pixelFormat);
-	if (it != formatsMap_.end()) {
-		unsigned int mbusCode = it->second.sensorCode;
-
-		if (std::count(mbusCodes.begin(), mbusCodes.end(), mbusCode))
-			supported = true;
+	unsigned int sensorCode = data_->getRawMediaBusFormat(&rawFormat);
+	if (!sensorCode) {
+		LOG(ISI, Error) << "Cannot adjust RAW pixelformat "
+				<< rawConfig.pixelFormat;
+		return Invalid;
 	}
 
-	if (!supported) {
-		/*
-		 * Adjust to the first mbus code supported by both the
-		 * sensor and the pipeline.
-		 */
-		const FormatMap::value_type *pipeConfig = nullptr;
-		for (unsigned int code : mbusCodes) {
-			const BayerFormat &bayerFormat = BayerFormat::fromMbusCode(code);
-			if (!bayerFormat.isValid())
-				continue;
-
-			auto fmt = std::find_if(ISICameraConfiguration::formatsMap_.begin(),
-						ISICameraConfiguration::formatsMap_.end(),
-						[code](const auto &isiFormat) {
-							const auto &pipe = isiFormat.second;
-							return pipe.sensorCode == code;
-						});
-
-			if (fmt == ISICameraConfiguration::formatsMap_.end())
-				continue;
-
-			pipeConfig = &(*fmt);
-			break;
-		}
-
-		if (!pipeConfig) {
-			LOG(ISI, Error) << "Cannot adjust RAW format "
-					<< rawConfig.pixelFormat;
-			return Invalid;
-		}
-
-		rawConfig.pixelFormat = pipeConfig->first;
+	if (rawFormat != rawConfig.pixelFormat) {
 		LOG(ISI, Debug) << "RAW pixelformat adjusted to "
-				<< pipeConfig->first;
+				<< rawFormat;
+		rawConfig.pixelFormat = rawFormat;
 		status = Adjusted;
 	}
 
@@ -405,6 +432,22 @@ ISICameraConfiguration::validateYuv(std::set<Stream *> &availableStreams,
 {
 	CameraConfiguration::Status status = Valid;
 
+	StreamConfiguration &yuvConfig = config_[0];
+	PixelFormat yuvPixelFormat = yuvConfig.pixelFormat;
+
+	/*
+	 * Make sure the sensor can produce a compatible YUV/RGB media bus
+	 * format. If the sensor can only produce RAW Bayer we can only fail
+	 * here as we can't adjust to anything but RAW.
+	 */
+	unsigned int yuvMediaBusCode = data_->getYuvMediaBusFormat(yuvPixelFormat);
+	if (!yuvMediaBusCode) {
+		LOG(ISI, Error) << "Cannot adjust pixelformat "
+				<< yuvConfig.pixelFormat;
+		return Invalid;
+	}
+
+	/* Adjust all the other streams. */
 	for (const auto &[i, cfg] : utils::enumerate(config_)) {
 
 		LOG(ISI, Debug) << "Stream " << i << ": " << cfg.toString();
@@ -502,16 +545,16 @@ CameraConfiguration::Status ISICameraConfiguration::validate()
 	 * image quality in exchange of a usually slower frame rate.
 	 * Usage of the STILL_CAPTURE role could be consider for this.
 	 */
-	const PipeFormat &pipeFmt = formatsMap_.at(config_[0].pixelFormat);
-
 	Size maxSize;
 	for (const auto &cfg : config_) {
 		if (cfg.size > maxSize)
 			maxSize = cfg.size;
 	}
 
+	PixelFormat pixelFormat = config_[0].pixelFormat;
+
 	V4L2SubdeviceFormat sensorFormat{};
-	sensorFormat.mbus_code = pipeFmt.sensorCode;
+	sensorFormat.mbus_code = data_->getMediaBusFormat(&pixelFormat);
 	sensorFormat.size = maxSize;
 
 	LOG(ISI, Debug) << "Computed sensor configuration: " << sensorFormat;
@@ -569,9 +612,134 @@ PipelineHandlerISI::PipelineHandlerISI(CameraManager *manager)
 {
 }
 
+/*
+ * Generate a StreamConfiguration for YUV/RGB use case.
+ *
+ * Verify it the sensor can produce a YUV/RGB media bus format and collect
+ * all the processed pixel formats the ISI can generate as supported stream
+ * configurations.
+ */
+StreamConfiguration PipelineHandlerISI::generateYUVConfiguration(Camera *camera,
+								 const Size &size)
+{
+	ISICameraData *data = cameraData(camera);
+	PixelFormat pixelFormat = formats::YUYV;
+	unsigned int mbusCode;
+
+	mbusCode = data->getYuvMediaBusFormat(pixelFormat);
+	if (!mbusCode)
+		return {};
+
+	/* Adjust the requested size to the sensor's capabilities. */
+	V4L2SubdeviceFormat sensorFmt;
+	sensorFmt.mbus_code = mbusCode;
+	sensorFmt.size = size;
+
+	int ret = data->sensor_->tryFormat(&sensorFmt);
+	if (ret) {
+		LOG(ISI, Error) << "Failed to try sensor format.";
+		return {};
+	}
+
+	Size sensorSize = sensorFmt.size;
+
+	/*
+	 * Populate the StreamConfiguration.
+	 *
+	 * As the sensor supports at least one YUV/RGB media bus format all the
+	 * processed ones in formatsMap_ can be generated from it.
+	 */
+	std::map<PixelFormat, std::vector<SizeRange>> streamFormats;
+
+	for (const auto &[pixFmt, pipeFmt] : ISICameraConfiguration::formatsMap_) {
+		const PixelFormatInfo &info = PixelFormatInfo::info(pixFmt);
+		if (info.colourEncoding == PixelFormatInfo::ColourEncodingRAW)
+			continue;
+
+		streamFormats[pixFmt] = { { kMinISISize, sensorSize } };
+	}
+
+	StreamFormats formats(streamFormats);
+
+	StreamConfiguration cfg(formats);
+	cfg.pixelFormat = pixelFormat;
+	cfg.size = sensorSize;
+	cfg.bufferCount = 4;
+
+	return cfg;
+}
+
+/*
+ * Generate a StreamConfiguration for Raw Bayer use case. Verify if the sensor
+ * can produce the requested RAW bayer format and eventually adjust it to
+ * the one with the largest bit-depth the sensor can produce.
+ */
+StreamConfiguration PipelineHandlerISI::generateRawConfiguration(Camera *camera)
+{
+	static const std::map<unsigned int, PixelFormat> rawFormats = {
+		{ MEDIA_BUS_FMT_SBGGR8_1X8, formats::SBGGR8 },
+		{ MEDIA_BUS_FMT_SGBRG8_1X8, formats::SGBRG8 },
+		{ MEDIA_BUS_FMT_SGRBG8_1X8, formats::SGRBG8 },
+		{ MEDIA_BUS_FMT_SRGGB8_1X8, formats::SRGGB8 },
+		{ MEDIA_BUS_FMT_SBGGR10_1X10, formats::SBGGR10 },
+		{ MEDIA_BUS_FMT_SGBRG10_1X10, formats::SGBRG10 },
+		{ MEDIA_BUS_FMT_SGRBG10_1X10, formats::SGRBG10 },
+		{ MEDIA_BUS_FMT_SRGGB10_1X10, formats::SRGGB10 },
+		{ MEDIA_BUS_FMT_SBGGR12_1X12, formats::SBGGR12 },
+		{ MEDIA_BUS_FMT_SGBRG12_1X12, formats::SGBRG12 },
+		{ MEDIA_BUS_FMT_SGRBG12_1X12, formats::SGRBG12 },
+		{ MEDIA_BUS_FMT_SRGGB12_1X12, formats::SRGGB12 },
+		{ MEDIA_BUS_FMT_SBGGR14_1X14, formats::SBGGR14 },
+		{ MEDIA_BUS_FMT_SGBRG14_1X14, formats::SGBRG14 },
+		{ MEDIA_BUS_FMT_SGRBG14_1X14, formats::SGRBG14 },
+		{ MEDIA_BUS_FMT_SRGGB14_1X14, formats::SRGGB14 },
+	};
+
+	ISICameraData *data = cameraData(camera);
+	PixelFormat pixelFormat = formats::SBGGR10;
+	unsigned int mbusCode;
+
+	/* pixelFormat will be adjusted, if the sensor can produce RAW. */
+	mbusCode = data->getRawMediaBusFormat(&pixelFormat);
+	if (!mbusCode)
+		return {};
+
+	/*
+	 * Populate the StreamConfiguration with all the supported Bayer
+	 * formats the sensor can produce.
+	 */
+	std::map<PixelFormat, std::vector<SizeRange>> streamFormats;
+	const CameraSensor *sensor = data->sensor_.get();
+
+	for (unsigned int code : sensor->mbusCodes()) {
+		/* Find a Bayer media bus code from the sensor. */
+		const BayerFormat &bayerFormat = BayerFormat::fromMbusCode(code);
+		if (!bayerFormat.isValid())
+			continue;
+
+		auto it = rawFormats.find(code);
+		if (it == rawFormats.end()) {
+			LOG(ISI, Warning) << bayerFormat
+					  << " not supported in ISI formats map.";
+			continue;
+		}
+
+		streamFormats[it->second] = { { sensor->resolution(), sensor->resolution() } };
+	}
+
+	StreamFormats formats(streamFormats);
+
+	StreamConfiguration cfg(formats);
+	cfg.size = sensor->resolution();
+	cfg.pixelFormat = pixelFormat;
+	cfg.bufferCount = 4;
+
+	return cfg;
+}
+
 std::unique_ptr<CameraConfiguration>
 PipelineHandlerISI::generateConfiguration(Camera *camera,
-					  const StreamRoles &roles)
+					  Span<const StreamRole> roles)
 {
 	ISICameraData *data = cameraData(camera);
 	std::unique_ptr<ISICameraConfiguration> config =
@@ -586,107 +754,51 @@ PipelineHandlerISI::generateConfiguration(Camera *camera,
 		return nullptr;
 	}
 
-	bool isRaw = false;
 	for (const auto &role : roles) {
 		/*
-		 * Prefer the following formats
+		 * Prefer the following formats:
 		 * - Still Capture: Full resolution YUYV
 		 * - ViewFinder/VideoRecording: 1080p YUYV
-		 * - RAW: sensor's native format and resolution
+		 * - RAW: Full resolution Bayer
 		 */
-		std::map<PixelFormat, std::vector<SizeRange>> streamFormats;
-		PixelFormat pixelFormat;
-		Size size;
+		StreamConfiguration cfg;
 
-		switch (role) {
-		case StreamRole::StillCapture:
-			/*
-			 * \todo Make sure the sensor can produce non-RAW formats
-			 * compatible with the ones supported by the pipeline.
-			 */
-			size = data->sensor_->resolution();
-			pixelFormat = formats::YUYV;
-			break;
+                switch (role) {
+                case StreamRole::StillCapture:
+                case StreamRole::Viewfinder:
+                case StreamRole::VideoRecording: {
+                        Size size = role == StreamRole::StillCapture
+                                  ? data->sensor_->resolution()
+                                  : PipelineHandlerISI::kPreviewSize;
+                        cfg = generateYUVConfiguration(camera, size);
+                        if (cfg.pixelFormat.isValid())
+                                break;
 
-		case StreamRole::Viewfinder:
-		case StreamRole::VideoRecording:
-			/*
-			 * \todo Make sure the sensor can produce non-RAW formats
-			 * compatible with the ones supported by the pipeline.
-			 */
-			size = PipelineHandlerISI::kPreviewSize;
-			pixelFormat = formats::YUYV;
-			break;
 
-		case StreamRole::Raw: {
-			/*
-			 * Make sure the sensor can generate a RAW format and
-			 * prefer the ones with a larger bitdepth.
-			 */
-			const ISICameraConfiguration::FormatMap::value_type *rawPipeFormat = nullptr;
-			unsigned int maxDepth = 0;
+                        /*
+                         * Fallback to use a Bayer format if that's what the
+                         * sensor supports.
+                         */
+                        [[fallthrough]];
 
-			for (unsigned int code : data->sensor_->mbusCodes()) {
-				const BayerFormat &bayerFormat = BayerFormat::fromMbusCode(code);
-				if (!bayerFormat.isValid())
-					continue;
+		 }
 
-				/* Make sure the format is supported by the pipeline handler. */
-				auto it = std::find_if(ISICameraConfiguration::formatsMap_.begin(),
-						       ISICameraConfiguration::formatsMap_.end(),
-						       [code](auto &isiFormat) {
-							        auto &pipe = isiFormat.second;
-							        return pipe.sensorCode == code;
-						       });
-				if (it == ISICameraConfiguration::formatsMap_.end())
-					continue;
-
-				if (bayerFormat.bitDepth > maxDepth) {
-					maxDepth = bayerFormat.bitDepth;
-					rawPipeFormat = &(*it);
-				}
-			}
-
-			if (!rawPipeFormat) {
-				LOG(ISI, Error)
-					<< "Cannot generate a configuration for RAW stream";
-				return nullptr;
-			}
-
-			size = data->sensor_->resolution();
-			pixelFormat = rawPipeFormat->first;
-
-			streamFormats[pixelFormat] = { { kMinISISize, size } };
-			isRaw = true;
-
-			break;
-		}
+                case StreamRole::Raw: {
+                        cfg = generateRawConfiguration(camera);
+                        break;
+                }
 
 		default:
 			LOG(ISI, Error) << "Requested stream role not supported: " << role;
 			return nullptr;
 		}
 
-		/*
-		 * For non-RAW configurations the ISI can perform colorspace
-		 * conversion. List all the supported output formats here.
-		 */
-		if (!isRaw) {
-			for (const auto &[pixFmt, pipeFmt] : ISICameraConfiguration::formatsMap_) {
-				const PixelFormatInfo &info = PixelFormatInfo::info(pixFmt);
-				if (info.colourEncoding == PixelFormatInfo::ColourEncodingRAW)
-					continue;
-
-				streamFormats[pixFmt] = { { kMinISISize, size } };
-			}
+		if (!cfg.pixelFormat.isValid()) {
+			LOG(ISI, Error)
+				<< "Cannot generate configuration for role: " << role;
+			return nullptr;
 		}
 
-		StreamFormats formats(streamFormats);
-
-		StreamConfiguration cfg(formats);
-		cfg.pixelFormat = pixelFormat;
-		cfg.size = size;
-		cfg.bufferCount = 4;
 		config->addConfiguration(cfg);
 	}
 
@@ -776,11 +888,10 @@ int PipelineHandlerISI::configure(Camera *camera, CameraConfiguration *c)
 		 * size is taken from the sink's COMPOSE (or source's CROP,
 		 * if any) rectangles.
 		 */
-		const ISICameraConfiguration::PipeFormat &pipeFormat =
-			ISICameraConfiguration::formatsMap_.at(config.pixelFormat);
+		unsigned int isiCode = ISICameraConfiguration::formatsMap_.at(config.pixelFormat);
 
 		V4L2SubdeviceFormat isiFormat{};
-		isiFormat.mbus_code = pipeFormat.isiCode;
+		isiFormat.mbus_code = isiCode;
 		isiFormat.size = config.size;
 
 		ret = pipe->isi->setFormat(1, &isiFormat);

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * ipa_vimc.cpp - Vimc Image Processing Algorithm module
+ * vimc.cpp - Vimc Image Processing Algorithm module
  */
 #include <libcamera/ipa/vimc_ipa_interface.h>
 
@@ -168,7 +168,7 @@ void IPAVimc::initTrace()
 	if (ret)
 		return;
 
-	ret = ::open(ipa::vimc::VimcIPAFIFOPath.c_str(), O_WRONLY);
+	ret = ::open(ipa::vimc::VimcIPAFIFOPath.c_str(), O_WRONLY | O_CLOEXEC);
 	if (ret < 0) {
 		ret = errno;
 		LOG(IPAVimc, Error) << "Failed to open vimc IPA test FIFO: "

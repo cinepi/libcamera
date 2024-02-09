@@ -8,6 +8,7 @@
 #include "libcamera/internal/pipeline_handler.h"
 
 #include <chrono>
+#include <sys/stat.h>
 #include <sys/sysmacros.h>
 
 #include <libcamera/base/log.h>
@@ -15,10 +16,11 @@
 #include <libcamera/base/utils.h>
 
 #include <libcamera/camera.h>
-#include <libcamera/camera_manager.h>
 #include <libcamera/framebuffer.h>
+#include <libcamera/property_ids.h>
 
 #include "libcamera/internal/camera.h"
+#include "libcamera/internal/camera_manager.h"
 #include "libcamera/internal/device_enumerator.h"
 #include "libcamera/internal/framebuffer.h"
 #include "libcamera/internal/media_device.h"
@@ -535,6 +537,62 @@ void PipelineHandler::completeRequest(Request *request)
 }
 
 /**
+ * \brief Retrieve the absolute path to a platform configuration file
+ * \param[in] subdir The pipeline handler specific subdirectory name
+ * \param[in] name The configuration file name
+ *
+ * This function locates a named platform configuration file and returns
+ * its absolute path to the pipeline handler. It searches the following
+ * directories, in order:
+ *
+ * - If libcamera is not installed, the src/libcamera/pipeline/\<subdir\>/data/
+ *   directory within the source tree ; otherwise
+ * - The system data (share/libcamera/pipeline/\<subdir\>) directory.
+ *
+ * The system directories are not searched if libcamera is not installed.
+ *
+ * \return The full path to the pipeline handler configuration file, or an empty
+ * string if no configuration file can be found
+ */
+std::string PipelineHandler::configurationFile(const std::string &subdir,
+					       const std::string &name) const
+{
+	std::string confPath;
+	struct stat statbuf;
+	int ret;
+
+	std::string root = utils::libcameraSourcePath();
+	if (!root.empty()) {
+		/*
+		 * When libcamera is used before it is installed, load
+		 * configuration files from the source directory. The
+		 * configuration files are then located in the 'data'
+		 * subdirectory of the corresponding pipeline handler.
+		 */
+		std::string confDir = root + "src/libcamera/pipeline/";
+		confPath = confDir + subdir + "/data/" + name;
+
+		LOG(Pipeline, Info)
+			<< "libcamera is not installed. Loading platform configuration file from '"
+			<< confPath << "'";
+	} else {
+		/* Else look in the system locations. */
+		confPath = std::string(LIBCAMERA_DATA_DIR)
+				+ "/pipeline/" + subdir + '/' + name;
+	}
+
+	ret = stat(confPath.c_str(), &statbuf);
+	if (ret == 0 && (statbuf.st_mode & S_IFMT) == S_IFREG)
+		return confPath;
+
+	LOG(Pipeline, Error)
+		<< "Configuration file '" << confPath
+		<< "' not found for pipeline handler '" << PipelineHandler::name() << "'";
+
+	return std::string();
+}
+
+/**
  * \brief Register a camera to the camera manager and pipeline handler
  * \param[in] camera The camera to be added
  *
@@ -555,7 +613,7 @@ void PipelineHandler::registerCamera(std::shared_ptr<Camera> camera)
 	 * Walk the entity list and map the devnums of all capture video nodes
 	 * to the camera.
 	 */
-	std::vector<dev_t> devnums;
+	std::vector<int64_t> devnums;
 	for (const std::shared_ptr<MediaDevice> &media : mediaDevices_) {
 		for (const MediaEntity *entity : media->entities()) {
 			if (entity->pads().size() == 1 &&
@@ -567,7 +625,14 @@ void PipelineHandler::registerCamera(std::shared_ptr<Camera> camera)
 		}
 	}
 
-	manager_->addCamera(std::move(camera), devnums);
+	/*
+	 * Store the associated devices as a property of the camera to allow
+	 * systems to identify which devices are managed by libcamera.
+	 */
+	Camera::Private *data = camera->_d();
+	data->properties_.set(properties::SystemDevices, devnums);
+
+	manager_->_d()->addCamera(std::move(camera));
 }
 
 /**
@@ -584,7 +649,7 @@ void PipelineHandler::registerCamera(std::shared_ptr<Camera> camera)
  */
 void PipelineHandler::hotplugMediaDevice(MediaDevice *media)
 {
-	media->disconnected.connect(this, [=]() { mediaDeviceDisconnected(media); });
+	media->disconnected.connect(this, [this, media] { mediaDeviceDisconnected(media); });
 }
 
 /**
@@ -634,7 +699,7 @@ void PipelineHandler::disconnect()
 			continue;
 
 		camera->disconnect();
-		manager_->removeCamera(camera);
+		manager_->_d()->removeCamera(camera);
 	}
 }
 
